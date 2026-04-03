@@ -11,21 +11,10 @@ Environment variables required (unless --dry-run):
 """
 
 import argparse
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-
-
-def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    print(f"[run] {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.stderr:
-        print(result.stderr.rstrip(), file=sys.stderr)
-    return result
 
 
 def deploy(project_dir: Path, project_id: str, token: str, org_id: str = "", prod: bool = True) -> str:
@@ -35,7 +24,8 @@ def deploy(project_dir: Path, project_id: str, token: str, org_id: str = "", pro
     if org_id:
         env["VERCEL_ORG_ID"] = org_id
 
-    cmd = ["vercel", "--token", token, "--yes"]
+    # Pass the token only via environment to avoid leaking it in process listings.
+    cmd = ["vercel", "--yes"]
     if prod:
         cmd.append("--prod")
     if project_id:
@@ -46,8 +36,7 @@ def deploy(project_dir: Path, project_id: str, token: str, org_id: str = "", pro
         print(result.stderr.rstrip(), file=sys.stderr)
         sys.exit(f"[error] Vercel deploy failed (exit {result.returncode})")
 
-    # The deployment URL is the last non-empty line printed to stdout.
-    # Validate that it looks like a URL to catch unexpected CLI output changes.
+    # Extract the deployment URL (first https:// line from the end of stdout).
     url = ""
     for line in reversed(result.stdout.splitlines()):
         line = line.strip()
@@ -55,8 +44,8 @@ def deploy(project_dir: Path, project_id: str, token: str, org_id: str = "", pro
             url = line
             break
     if not url:
-        url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-        print(f"[warn] Could not parse a URL from Vercel output; raw last line: {url!r}", file=sys.stderr)
+        print(result.stdout.rstrip(), file=sys.stderr)
+        sys.exit("[error] Could not parse a deployment URL from Vercel output.")
     print(f"[ok] Deployed: {url}")
     return url
 

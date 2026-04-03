@@ -61,17 +61,25 @@ jobs:
 
       # ── 5. Inject BuildBrief into template files ──────────────────────────
       - name: Inject BuildBrief
+        env:
+          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
         run: |
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
+          BRIEF_FILE="${{ runner.temp }}/brief-${{ github.run_id }}.json"
+          printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
           python scripts/inject_brief.py \
             --project-dir "$PROJECT_DIR" \
-            --brief '${{ inputs.build_brief_json }}' \
+            --brief-file "$BRIEF_FILE" \
             $DRY_RUN_FLAG
 
-      # ── 6. Deploy to Vercel ────────────────────────────────────────────────
+      # ── 6. Install Vercel CLI ──────────────────────────────────────────────
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      # ── 7. Deploy to Vercel ────────────────────────────────────────────────
       - name: Deploy to Vercel
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

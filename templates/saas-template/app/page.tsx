@@ -39,10 +39,10 @@ export default function Home() {
       {/* Hero */}
       <section style={{ textAlign: "center", maxWidth: 640 }}>
         <h1 style={{ fontSize: "3rem", fontWeight: 800, color: "#111827", margin: 0 }}>
-          {{PRODUCT_NAME}}
+          {"{{PRODUCT_NAME}}"}
         </h1>
         <p style={{ fontSize: "1.25rem", color: "#6b7280", margin: "1rem 0 2rem" }}>
-          {{PRODUCT_TAGLINE}}
+          {"{{PRODUCT_TAGLINE}}"}
         </p>
 
         {/* CTA */}

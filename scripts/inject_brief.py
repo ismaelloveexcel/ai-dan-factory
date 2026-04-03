@@ -5,6 +5,11 @@ inject_brief.py – Inject a BuildBrief (JSON) into the saas-template placeholde
 Usage:
     python scripts/inject_brief.py \
         --project-dir ./my-project \
+        --brief-file /tmp/brief.json
+
+    # Or pass JSON inline (only safe for values without single quotes):
+    python scripts/inject_brief.py \
+        --project-dir ./my-project \
         --brief '{"product_name": "Acme", "product_tagline": "Ship faster"}'
 
 The script replaces {{KEY}} tokens in:
@@ -57,7 +62,7 @@ def inject(project_dir: Path, brief: dict, dry_run: bool = False) -> None:
             value = brief.get(brief_key)
             if value is None:
                 continue
-        # Stringify lists/dicts for simple injection.
+            # Stringify lists/dicts for simple injection.
             # NOTE: In TypeScript/JSX files this only works safely when the
             # placeholder appears inside a string literal.  If you need to
             # inject a JavaScript value (array/object literal) directly, do
@@ -86,14 +91,24 @@ def inject(project_dir: Path, brief: dict, dry_run: bool = False) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inject a BuildBrief into saas-template files")
     parser.add_argument("--project-dir", required=True, help="Path to the project directory (clone of saas-template)")
-    parser.add_argument("--brief", required=True, help="BuildBrief as a JSON string")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--brief", help="BuildBrief as a JSON string")
+    group.add_argument("--brief-file", help="Path to a file containing the BuildBrief JSON (preferred; avoids shell-quoting issues)")
     parser.add_argument("--dry-run", action="store_true", help="Print what would change without writing files")
     args = parser.parse_args()
 
+    if args.brief_file:
+        brief_path = Path(args.brief_file).expanduser().resolve()
+        if not brief_path.is_file():
+            sys.exit(f"[error] --brief-file does not exist: {brief_path}")
+        raw = brief_path.read_text(encoding="utf-8")
+    else:
+        raw = args.brief  # type: ignore[assignment]
+
     try:
-        brief = json.loads(args.brief)
+        brief = json.loads(raw)
     except json.JSONDecodeError as exc:
-        sys.exit(f"[error] --brief is not valid JSON: {exc}")
+        sys.exit(f"[error] Brief is not valid JSON: {exc}")
 
     project_dir = Path(args.project_dir).expanduser().resolve()
     if not project_dir.is_dir():
