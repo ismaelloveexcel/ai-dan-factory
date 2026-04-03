@@ -1,0 +1,7 @@
+{
+  "product_name": "{{PRODUCT_NAME}}",
+  "product_tagline": "{{PRODUCT_TAGLINE}}",
+  "product_url": "{{PRODUCT_URL}}",
+  "vercel_project_id": "{{VERCEL_PROJECT_ID}}",
+  "features": []
+}

@@ -1,0 +1,87 @@
+name: Factory Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Unique project / repo slug (e.g. acme-saas)"
+        required: true
+        type: string
+      build_brief_json:
+        description: "BuildBrief as a JSON string"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run – skip GitHub repo creation and Vercel deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  build:
+    name: Generate & Deploy SaaS Product
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # ── 1. Checkout factory repository ────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ───────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── 3. Create GitHub repository from template ─────────────────────────
+      - name: Create project repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python scripts/create_project.py \
+            --project-id "${{ inputs.project_id }}" \
+            --org "${{ github.repository_owner }}" \
+            $DRY_RUN_FLAG
+
+      # ── 4. Copy template into workspace ───────────────────────────────────
+      - name: Copy saas-template to project workspace
+        run: |
+          PROJECT_DIR="${{ runner.temp }}/project-${{ github.run_id }}"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          cp -r templates/saas-template "$PROJECT_DIR"
+
+      # ── 5. Inject BuildBrief into template files ──────────────────────────
+      - name: Inject BuildBrief
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python scripts/inject_brief.py \
+            --project-dir "$PROJECT_DIR" \
+            --brief '${{ inputs.build_brief_json }}' \
+            $DRY_RUN_FLAG
+
+      # ── 6. Deploy to Vercel ────────────────────────────────────────────────
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python scripts/deploy.py \
+            --project-dir "$PROJECT_DIR" \
+            --project-id "${{ inputs.project_id }}" \
+            $DRY_RUN_FLAG
