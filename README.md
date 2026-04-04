@@ -1,386 +1,222 @@
-# GitHub Factory (Minimal Production Structure)
+# AI-DAN Factory — Automated Product Factory
 
-This repository is a minimal factory that:
-1. Creates a GitHub project repository from a template
-2. Validates and normalizes BuildBrief input
-3. Injects BuildBrief into placeholder product files
-4. Triggers deployment through Vercel API
+A zero-touch product factory that validates ideas, creates repositories, builds products, deploys them, evaluates quality, and generates distribution content — all from a single BuildBrief JSON payload.
 
-## Folder Structure
+## Overview
+
+The factory executes a strict pipeline:
+
+```
+BuildBrief → Validate → Score → Approve → Economics → Control → Queue →
+Create Repo → Inject → Build → Deploy → Health Check → Quality Gate →
+Monitor → Distribute → Track → Learn
+```
+
+Every decision is deterministic and auditable. Steps with missing prerequisites (e.g. no business output) are gracefully skipped with warnings.
+
+## Architecture
 
 ```text
 .
-├── .github/
-│   └── workflows/
-│       ├── factory-autonomous-runner.yml
-│       ├── factory-build.yml
-│       ├── factory-ci.yml
-│       └── factory-monitor.yml
-├── data/
-│   └── lifecycle.sqlite
-├── docs/
-│   ├── aidan_integration_contract.md
-│   ├── live_run_checklist.md
-│   └── operator_control_contract.md
+├── .github/workflows/
+│   ├── factory-build.yml              # Main pipeline (25+ steps)
+│   ├── factory-autonomous-runner.yml  # Scheduled idea source/score loop
+│   ├── factory-ci.yml                 # CI tests on PRs and pushes
+│   └── factory-monitor.yml            # Scheduled portfolio monitoring
 ├── scripts/
-│   ├── business_output_engine.py
-│   ├── create_project.py
-│   ├── deploy.py
-│   ├── deploy_health_check.py
-│   ├── emit_alert.py
-│   ├── factory_utils.py
-│   ├── idea_source_engine.py
-│   ├── lifecycle_orchestrator.py
-│   ├── monitor_and_decide.py
-│   ├── normalize_workflow_inputs.py
-│   ├── portfolio_summary.py
-│   ├── run_factory_tests.py
-│   ├── scoring_engine.py
-│   ├── state_store.py
-│   ├── validate_brief.py
-│   └── validate_business_gate.py
-├── test_data/
-│   ├── autonomous_ideas.json
-│   ├── aidan_dry_run_brief.json
-│   ├── aidan_live_brief.json
-│   └── live_test_brief.json
-└── templates/
-    └── saas-template/
-        ├── .gitignore
-        ├── PRODUCT_BRIEF.md
-        ├── app/
-        │   ├── api/
-        │   │   └── lead/
-        │   │       └── route.ts
-        │   ├── globals.css
-        │   ├── layout.tsx
-        │   └── page.tsx
-        ├── next-env.d.ts
-        ├── next.config.js
-        ├── package.json
-        ├── product.config.json
-        └── tsconfig.json
+│   ├── validate_brief.py              # Phase 1: BuildBrief validation + normalization
+│   ├── validate_business_gate.py      # Phase 2: Unified business gate (APPROVE/HOLD/REJECT)
+│   ├── scoring_engine.py              # Phase 2: Deterministic scoring (0-10)
+│   ├── build_economics.py             # Phase 8.5: ROI evaluation before build
+│   ├── build_control.py               # Phase 8: Rate limiting + queue priority
+│   ├── create_project.py              # Phase 3: GitHub repo creation from template
+│   ├── inject_brief.py                # Phase 4: Brief injection into product files
+│   ├── deploy.py                      # Phase 6: Vercel deployment trigger
+│   ├── deploy_health_check.py         # Phase 6.5: Post-deploy health verification
+│   ├── quality_gate.py                # Phase 6.65: Product quality scoring gate
+│   ├── business_output_engine.py      # Phase 11: Monetization payload generation
+│   ├── distribution_engine.py         # Phase 11.5: Distribution content + outreach
+│   ├── monitor_and_decide.py          # Phase 7/12: Signal evaluation + decisions
+│   ├── portfolio_summary.py           # Phase 7: Portfolio bucketing
+│   ├── lifecycle_orchestrator.py      # Phase 9: Strict state machine transitions
+│   ├── state_store.py                 # Phase 7: Persistent SQLite lifecycle store
+│   ├── idea_source_engine.py          # Phase 13: Autonomous idea selection
+│   ├── factory_utils.py               # Shared utilities
+│   ├── normalize_workflow_inputs.py   # Workflow input normalization
+│   ├── emit_alert.py                  # Failure alert payloads
+│   └── run_factory_tests.py           # 9-stage automated test suite
+├── templates/saas-template/           # Next.js 14 landing page template
+├── test_data/                         # Test payloads and autonomous ideas
+├── data/lifecycle.sqlite              # Persistent lifecycle database
+├── docs/                              # Integration contracts and checklists
+└── .env.example                       # Required environment variables
 ```
 
-## Template Behavior (`templates/saas-template`)
+## Setup
 
-- Next.js 14 app (App Router)
-- Single landing page with one CTA button
-- Hero section that reads `PRODUCT_BRIEF.md` and displays:
-  - Product name
-  - Problem
-  - Solution
-  - CTA
-- API route: `POST /api/lead`
+### Environment Variables
 
-## Scripts (Core)
+Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these as repository secrets:
 
-### `scripts/validate_brief.py`
-Validates BuildBrief payloads before execution.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FACTORY_GITHUB_TOKEN` | Yes | PAT with `repo` scope for creating repositories |
+| `VERCEL_DEPLOY_HOOK_URL` | Yes | Vercel webhook URL for triggering deployments |
+| `TEMPLATE_OWNER` | No | Template repo owner (defaults to current repo owner) |
+| `TEMPLATE_REPO` | No | Template repo name (defaults to current repo name) |
+| `MAX_BUILDS_PER_DAY` | No | Daily build limit (default: 20) |
+| `MAX_PARALLEL_BUILDS` | No | Max parallel builds (default: 3) |
+| `MIN_ROI_THRESHOLD` | No | Minimum ROI to approve build (default: 1.5) |
 
-Checks:
-- required fields including business-gate metadata:
-  - `project_id`, `product_name`, `problem`, `solution`, `cta`
-  - `source_type`, `reference_context`
-  - `demand_level`, `monetization_proof`, `market_saturation`, `differentiation`
-- `project_id` safe slug format
-- text field non-empty and length limits
-- key normalization (`snake_case` + `camelCase`)
+### First Run
 
-Produces:
-- normalized brief JSON file
-- idempotency key (`project_id` + hash(normalized brief))
+1. Set repository secrets: `FACTORY_GITHUB_TOKEN`, `VERCEL_DEPLOY_HOOK_URL`
+2. Go to **Actions** → **factory-build** → **Run workflow**
+3. Inputs:
+   - `project_id`: `test-001`
+   - `build_brief_json`: paste content from `test_data/live_test_brief.json`
+   - `dry_run`: `true` (first time)
+4. Verify success, then re-run with `dry_run`: `false`
 
-### `scripts/validate_business_gate.py`
-Unified execution gate (mandatory before build/deploy):
-- validates idea source + demand + differentiation rules
-- computes deterministic AI-DAN score (0–10)
-- returns decision: `APPROVE | HOLD | REJECT`
-- blocks pipeline when decision is not `APPROVE`
+## Pipeline Phases
 
-Hard rules:
-- `LOW` demand => reject
-- `monetization_proof=NO` => reject
-- `HIGH` saturation + `WEAK` differentiation => reject
+### Phase 1 — BuildBrief Validation
+Validates and normalizes input. Required fields:
+- `project_id`, `product_name`, `problem`, `solution`, `cta`
+- `source_type`, `reference_context`
+- `demand_level`, `monetization_proof`, `market_saturation`, `differentiation`
 
-### `scripts/scoring_engine.py`
-Deterministic scoring module/script used by the business gate:
-- score breakdown:
-  - market demand
-  - competition saturation
-  - monetization potential
-  - build complexity reverse score
-  - speed-to-revenue
-- score-based decision:
-  - `<6` => `REJECT`
-  - `6-7` => `HOLD`
-  - `8-10` => `APPROVE`
+Optional scoring fields preserved: `build_complexity`, `speed_to_revenue`
 
-### `scripts/idea_source_engine.py`
-Autonomous idea selection layer:
-- loads candidate briefs from `test_data/autonomous_ideas.json`
-- validates required fields
-- selects a deterministic brief using run-based seed
-- emits selected brief artifact for downstream scoring/gating
+### Phase 2 — Revenue Scoring Engine
+Deterministic scoring (0–10) with hard rules:
+- LOW demand → REJECT
+- monetization_proof=NO → REJECT
+- HIGH saturation + WEAK differentiation → REJECT
+- Score <6 → REJECT, 6-7 → HOLD, ≥8 → APPROVE
 
-### `scripts/lifecycle_orchestrator.py`
-Enforces strict lifecycle transitions:
-`idea -> validated -> scored -> approved/rejected/hold`
-`approved -> building -> deployed -> monitored -> scaled/killed`
+### Phase 3 — Repo Creation
+Idempotent GitHub repo creation from template. Retries on transient errors. Skips if repo already exists.
 
-No step skipping is allowed.
+### Phase 4 — Build Injection
+Injects BuildBrief into `PRODUCT_BRIEF.md` and `product.config.json`. Atomic writes for safe reruns.
 
-### `scripts/business_output_engine.py`
-Generates mandatory monetization payload:
-`business_output.json` including:
-- headline
-- cta
-- monetization_model
-- pricing_suggestion
-- offer_structure
-- 2-channel GTM plan
-- conversion hints
+### Phase 5 — Build Pipeline Hardening
+Deterministic builds with retry logic, structured logging, and failure detection at every step.
 
-### `scripts/deploy_health_check.py`
-Post-deploy reliability gate:
-- retries health probes
-- emits failure reason when unhealthy
+### Phase 6 — Deployment
+Triggers Vercel deployment via webhook. Retries on transient failures.
 
-### `scripts/monitor_and_decide.py` + `scripts/portfolio_summary.py`
-Auto-prune/scale layer:
-- tracks `traffic_signal`, `activation_metric`, `revenue_signal_status`
-- emits `kill_candidate`, `optimize_candidate`, `scale_candidate`
-- outputs simplified portfolio buckets: `IGNORE`, `WATCH`, `SCALE` (max 5 each)
+### Phase 6.5 — Deployment Verification
+Health check with configurable retries. Fails pipeline if deployment is unreachable.
 
-### `scripts/state_store.py`
-Persistent state backend for lifecycle and monitoring:
-- manages lifecycle transitions in SQLite
-- stores run-level state and transition history
-- stores monitoring decision signals
-- database path used across all workflows: `data/lifecycle.sqlite`
-- `factory-build` writes to `data/lifecycle.sqlite` and uploads it as a workflow artifact; `factory-monitor` reads from the same path after checkout
+### Phase 6.65 — Product Quality Gate
+Evaluates product quality (0–10) across 5 dimensions:
+- Clarity, Usability, UX Simplicity, Perceived Value, First Impression
+- <6 → BLOCK distribution, 6-7 → improve, ≥8 → proceed
 
-### `scripts/create_project.py`
-Creates a GitHub repo from a template repo using GitHub API with duplicate protection.
+### Phase 7 — Tracking System
+Persistent SQLite database tracks: run_id, project_id, repo_url, deployment_url, status, timestamps, transitions.
 
-Behavior:
-- checks if the target repo already exists (idempotent reruns)
-- if repo exists, marks as already created and continues safely
-- retries transient GitHub API/network errors
-- emits structured JSON logs and optional result JSON file
+### Phase 8 — Control Layer
+Rate limiting, queue priority, and duplicate prevention:
+- `MAX_BUILDS_PER_DAY` enforcement
+- Idempotency checking (no duplicate active builds)
+- Priority scoring by revenue score + demand + speed
 
-Example:
-```bash
-python scripts/create_project.py \
-  --project-id acme-saas \
-  --org your-org
+### Phase 8.5 — Build Economics
+ROI evaluation before build:
+- Estimates build cost, expected return, ROI
+- NEGATIVE ROI → REJECT, LOW ROI → HOLD, HIGH ROI → PRIORITIZE
+
+### Phase 9 — Idempotency
+Idempotency key = `project_id:hash(normalized_brief)`. Enforced at validation, repo creation, and build control.
+
+### Phase 10 — Failure Recovery
+Retry logic at every external call (GitHub API, Vercel, health checks). Structured failure alerts with `emit_alert.py`.
+
+### Phase 11 — Monetization Validation
+Generates `business_output.json` with: headline, CTA, monetization model, pricing, offer structure, GTM plan, conversion hints.
+
+### Phase 11.5 — Distribution Execution
+Generates distribution content:
+- Landing page content summary
+- Social media launch post
+- 5 outreach targets with personalized messages
+- Tracking structure (impressions, clicks, responses)
+
+### Phase 12 — Auto-Improvement Loop
+Monitor + decide engine tracks success patterns: traffic, activation, revenue signals → kill/optimize/scale decisions.
+
+### Phase 13 — Automation
+GitHub Actions workflows:
+- `factory-build.yml`: Full pipeline (manual dispatch)
+- `factory-autonomous-runner.yml`: Scheduled every 30 min
+- `factory-monitor.yml`: Scheduled portfolio monitoring
+- `factory-ci.yml`: CI on PRs and pushes
+
+### Phase 14 — Single Operator Simplicity
+- No coding required
+- Safe defaults for all optional inputs
+- Clear JSON outputs at every step
+- Operator control contract in `docs/operator_control_contract.md`
+
+## Workflow Execution Order
+
+```
+ 1. Checkout + setup
+ 2. Normalize input contract
+ 3. Run tests only (if enabled)
+ 4. Initialize lifecycle (idea)
+ 5. Validate BuildBrief
+ 6. Business gate (APPROVE required)
+ 7. Build economics evaluation
+ 8. Build control check
+ 9. Lifecycle → building
+10. Create repository
+11. Inject BuildBrief
+12. Generate business output
+13. Trigger deployment
+14. Health check
+15. Quality gate
+16. Lifecycle → deployed → monitored
+17. Monitor & decide
+18. Distribution execution
+19. Portfolio summary
+20. Finalize response
+21. Alert on failure
+22. Upload artifacts
 ```
 
-Environment:
-- `GITHUB_TOKEN` (required unless `--dry-run`)
-- `TEMPLATE_OWNER` / `TEMPLATE_REPO` (optional if `GITHUB_REPOSITORY` is available)
-
-### `scripts/inject_brief.py`
-Takes BuildBrief JSON and generates:
-- `PRODUCT_BRIEF.md`
-- `product.config.json`
-
-Behavior:
-- strict required-field checks (no silent placeholder fallback)
-- atomic writes for safe reruns
-- structured JSON logs + optional result JSON file
-
-Example:
-```bash
-python scripts/inject_brief.py \
-  --project-dir templates/saas-template \
-  --brief-json '{"project_id":"acme-saas","product_name":"Acme","problem":"Ops chaos","solution":"Automated workflow","cta":"Join Waitlist"}'
-```
-
-### `scripts/deploy.py`
-Triggers deployment via Vercel Deploy Hook API.
-
-Behavior:
-- dry-run / production mode
-- retry transient deployment trigger failures
-- structured JSON logs + optional result JSON file
-
-Example:
-```bash
-python scripts/deploy.py --project-id acme-saas
-```
-
-Environment:
-- `VERCEL_DEPLOY_HOOK_URL` (required unless `--dry-run`)
-
-## GitHub Workflows
-
-Primary execution:
-- `.github/workflows/factory-build.yml` (full lifecycle run)
-
-Autonomous scheduler:
-- `.github/workflows/factory-autonomous-runner.yml` (scheduled source->score->gate loop)
-
-Monitoring loop:
-- `.github/workflows/factory-monitor.yml` (scheduled portfolio summaries from lifecycle DB)
-
-Manual trigger inputs:
-- `project_id` (string, required)
-- `build_brief_json` (string, required unless `run_automated_tests_only=true`)
-- `dry_run` (`true`/`false`)
-- `run_automated_tests_only` (`true`/`false`)
-- `test_mode` (`true`/`false`, deprecated alias for `run_automated_tests_only`)
-
-Execution order (non-tests mode):
-1. Checkout + setup
-2. Normalize input contract
-3. Lifecycle state = `idea`
-4. Validate brief contract
-5. Unified business gate (`validate_business_gate.py`) => APPROVE required
-6. Lifecycle state = `building`
-7. Create repo
-8. Inject brief
-9. Generate `business_output.json`
-10. Trigger deploy
-11. Deploy health check
-12. Lifecycle states: `deployed`, then `monitored`
-13. Monitor decision output (kill/optimize/scale candidates)
-14. Portfolio summary output
-15. Final factory response + artifacts
-
-Final workflow response shape:
-```json
-{
-  "project_id": "acme-saas",
-  "run_id": "123456789",
-  "run_attempt": "1",
-  "workflow_url": "https://github.com/org/repo/actions/runs/123456789",
-  "timestamp_utc": "2026-04-04T00:00:00Z",
-  "repo_url": "https://github.com/org/acme-saas",
-  "deployment_url": "https://acme.vercel.app",
-  "status": "success",
-  "run_mode": "production",
-  "idempotency_key": "acme-saas:abc123",
-  "error_summary": "",
-  "failure_reason": "",
-  "kill_candidate": false,
-  "optimize_candidate": false,
-  "scale_candidate": false,
-  "steps": [],
-  "deployment": {
-    "status": "triggered",
-    "url": "https://acme.vercel.app"
-  },
-  "result_artifact": {
-    "name": "factory-result-123-1",
-    "path": "factory-response.json"
-  }
-}
-```
-
-## Required GitHub Secrets
-
-- `FACTORY_GITHUB_TOKEN`
-- `VERCEL_DEPLOY_HOOK_URL`
-
-## Automated Testing (No Manual Steps)
-
-Run all factory tests with one command:
+## Automated Testing
 
 ```bash
 python3 scripts/run_factory_tests.py
 ```
 
-What this automates:
-- Python syntax checks for all factory scripts
-- BuildBrief payload validity check
-- Autonomous idea payload validation + deterministic scoring check
-- Negative validation case (invalid brief must fail)
-- Full dry-run pipeline simulation:
-  - validate brief
-  - business gate decision
-  - create repo (simulated)
-  - inject brief (simulated)
-  - generate business output
-  - deploy trigger (simulated)
-  - deploy health check (simulated)
+9-stage test suite:
+1. Script syntax checks (all 21 scripts)
+2. Payload schema validation
+3. Idea source + scoring tests
+4. Business gate + lifecycle tests
+5. Full dry-run pipeline simulation
+6. Monitor/scale/portfolio tests
+7. Negative guard tests
+8. Quality gate + economics + distribution + control tests
+9. End-to-end pipeline simulation (13 steps)
 
-CI automation:
-- `.github/workflows/factory-ci.yml` runs these tests automatically on:
-  - pushes to `main`
-  - pull requests targeting `main`
-  - manual trigger (`workflow_dispatch`)
-- Runs are concurrency-cancelled per branch/PR to avoid duplicate compute.
-- `factory-build` also supports `run_automated_tests_only=true` for tests-only execution with no external actions.
+## Monetization Readiness
 
-Recommended merge efficiency setting (GitHub UI):
-- Branch protection for `main` should require status check:
-  - `factory-ci / test`
-- This prevents manual review churn on unverified changes.
+Every approved product includes:
+- Clear CTA in landing page
+- Pricing suggestion in business output
+- Monetization model (subscription/one-time)
+- 2-channel GTM plan
+- Conversion hints
+- Distribution content ready for outreach
 
-## First Live Run
+## Documentation
 
-Use this run to verify the first real execution without changing factory logic.
-
-1. Open GitHub → **Actions** → **factory-build** workflow.
-2. Click **Run workflow** (recommended branch: `main`).
-3. Use these inputs:
-   - `project_id`: `test-001`
-   - `build_brief_json`: paste contents of `test_data/live_test_brief.json`
-   - `dry_run`: `false`
-   - `run_automated_tests_only`: `false`
-
-Reference payload:
-
-```json
-{
-  "project_id":"test-001",
-  "product_name":"Test Product",
-  "problem":"Users need a simple way to validate the AI-DAN factory live pipeline.",
-  "solution":"A minimal placeholder product used only to test live repo creation and deployment.",
-  "cta":"Join waitlist",
-  "source_type":"TREND",
-  "reference_context":"Search demand for lightweight AI product launch kits among indie founders.",
-  "demand_level":"HIGH",
-  "monetization_proof":"YES",
-  "market_saturation":"MEDIUM",
-  "differentiation":"STRONG",
-  "build_complexity":"LOW",
-  "speed_to_revenue":"FAST"
-}
-```
-
-Recommended first settings:
-- Run once with `dry_run=true` if you want one final simulation.
-- Run with `dry_run=false` for the first actual live test.
-
-What success looks like:
-- Steps `Validate BuildBrief`, `Create project repository`, `Inject BuildBrief`, and `Deploy project` all complete.
-- Final summary shows run status as **SUCCESS**.
-- Summary includes a repo URL and deployment status.
-- Step output includes the structured factory response JSON (`factory_response`).
-
-What to check first on failure:
-1. **Validate BuildBrief** step (invalid JSON, missing fields, `project_id` mismatch).
-2. **Create project repository** step (token scope/permissions).
-3. **Unified business gate** step (decision must be `APPROVE`).
-4. **Deploy project** / **Deployment health check** steps.
-5. Final `factory_response` JSON in the **Finalize factory response** step.
-
-See the operator checklist: [docs/live_run_checklist.md](docs/live_run_checklist.md)
-See AI-DAN contract: [docs/aidan_integration_contract.md](docs/aidan_integration_contract.md)
-See operator control contract: [docs/operator_control_contract.md](docs/operator_control_contract.md)
-
-## Fast workflow testing in Actions
-
-To run checks without triggering repo creation/deployment:
-
-1. Open **Actions** → **factory-build**.
-2. Click **Run workflow**.
-3. Set:
-   - `run_automated_tests_only=true`
-   - `dry_run=true`
-   - `build_brief_json` can be empty
-   - `project_id` can stay `test-001`
-
-This executes tests-only mode and guarantees no live repo creation/deployment.
+- [AI-DAN Integration Contract](docs/aidan_integration_contract.md)
+- [Operator Control Contract](docs/operator_control_contract.md)
+- [Live Run Checklist](docs/live_run_checklist.md)

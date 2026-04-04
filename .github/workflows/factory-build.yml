@@ -266,6 +266,56 @@ jobs:
             exit 1
           fi
 
+      - name: 8.5) Build economics evaluation
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/build_economics.py \
+            --brief-file "$NORMALIZED_BRIEF_FILE" \
+            --result-file "$RESULT_DIR/build_economics.json" \
+            --project-id "$PROJECT_ID_INPUT" \
+            $DRY_RUN_FLAG
+
+          if [ "${EFFECTIVE_DRY_RUN}" != "true" ]; then
+            ECONOMICS_DECISION="$(python - <<'PY' "$RESULT_DIR/build_economics.json"
+          import json
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          print(data.get("economics_decision", ""))
+          PY
+            )"
+
+            if [ "$ECONOMICS_DECISION" = "HOLD" ]; then
+              echo "Build economics decision is HOLD; pausing pipeline."
+              exit 1
+            fi
+          fi
+
+      - name: 8.6) Build control and rate limiting
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/build_control.py \
+            --brief-file "$NORMALIZED_BRIEF_FILE" \
+            --state-db "$STATE_DB" \
+            --business-score "${BUSINESS_SCORE:-0}" \
+            --result-file "$RESULT_DIR/build_control.json" \
+            --project-id "$PROJECT_ID_INPUT" \
+            $DRY_RUN_FLAG
+
       - name: 9) Move lifecycle to building
         if: env.RUN_MODE != 'tests_only'
         run: |
@@ -417,6 +467,7 @@ PY
                   print(json.load(f).get("deployment_url", ""))
           PY
           )"
+          echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
           DRY_RUN_FLAG=""
           if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
@@ -426,6 +477,41 @@ PY
             --project-id "$PROJECT_ID_INPUT" \
             --deployment-url "$DEPLOYMENT_URL" \
             --result-file "$RESULT_DIR/deploy_health.json" \
+            $DRY_RUN_FLAG
+
+          HEALTH_STATUS="$(python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["RESULT_DIR"], "deploy_health.json")
+          if os.path.isfile(p):
+              with open(p, "r", encoding="utf-8") as f:
+                  print(json.load(f).get("health_status", "unknown"))
+          else:
+              print("unknown")
+          PY
+          )"
+          echo "HEALTH_STATUS=$HEALTH_STATUS" >> "$GITHUB_ENV"
+
+      - name: 14.5) Product quality gate
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          BUSINESS_OUTPUT_FILE="$RESULT_DIR/business_output.json"
+          BO_FLAG=""
+          if [ -f "$BUSINESS_OUTPUT_FILE" ]; then
+            BO_FLAG="--business-output-file $BUSINESS_OUTPUT_FILE"
+          fi
+
+          python scripts/quality_gate.py \
+            --brief-file "$NORMALIZED_BRIEF_FILE" \
+            $BO_FLAG \
+            --health-status "${HEALTH_STATUS:-unknown}" \
+            --result-file "$RESULT_DIR/quality_gate.json" \
+            --project-id "$PROJECT_ID_INPUT" \
             $DRY_RUN_FLAG
 
       - name: 15) Move lifecycle to deployed
@@ -475,6 +561,28 @@ PY
             --timestamp-utc "$TIMESTAMP_UTC" \
             --result-file "$RESULT_DIR/monitoring_decision.json"
 
+      - name: 17.5) Distribution execution
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          BUSINESS_OUTPUT_FILE="$RESULT_DIR/business_output.json"
+          if [ ! -f "$BUSINESS_OUTPUT_FILE" ]; then
+            echo "::warning::No business_output.json found; skipping distribution."
+          else
+            python scripts/distribution_engine.py \
+              --brief-file "$NORMALIZED_BRIEF_FILE" \
+              --business-output-file "$BUSINESS_OUTPUT_FILE" \
+              --deployment-url "${DEPLOYMENT_URL:-}" \
+              --result-file "$RESULT_DIR/distribution.json" \
+              --project-id "$PROJECT_ID_INPUT" \
+              $DRY_RUN_FLAG
+          fi
+
       - name: 18) Portfolio simplified summary
         if: always()
         run: |
@@ -520,12 +628,16 @@ PY
               ("automated_tests_only", result_dir / "automated_tests_only.json"),
               ("validate_brief", result_dir / "validate_brief.json"),
               ("business_gate", result_dir / "business_gate.json"),
+              ("build_economics", result_dir / "build_economics.json"),
+              ("build_control", result_dir / "build_control.json"),
               ("create_repo", result_dir / "create_repo.json"),
               ("inject_brief", result_dir / "inject_brief.json"),
               ("business_output", result_dir / "business_output_result.json"),
               ("deploy", result_dir / "deploy.json"),
               ("deploy_health", result_dir / "deploy_health.json"),
+              ("quality_gate", result_dir / "quality_gate.json"),
               ("monitoring_decision", result_dir / "monitoring_decision.json"),
+              ("distribution", result_dir / "distribution.json"),
           ]
 
           steps = []
