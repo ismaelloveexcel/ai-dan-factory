@@ -25,54 +25,213 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      factory_response: ${{ steps.finalize.outputs.factory_response }}
     env:
       TEMPLATE_PROJECT_DIR: templates/saas-template
 
     steps:
-      - name: 1) checkout
+      - name: 1) Checkout repository
         uses: actions/checkout@v4
 
-      - name: 2) setup python
+      - name: 2) Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: 3) run create_project.py
+      - name: 3) Initialize run context
+        env:
+          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          BRIEF_FILE="$(mktemp "$RUNNER_TEMP/build-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          NORMALIZED_BRIEF_FILE="$(mktemp "$RUNNER_TEMP/normalized-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
+
+          echo "::add-mask::$FACTORY_GITHUB_TOKEN"
+          echo "::add-mask::$VERCEL_DEPLOY_HOOK_URL"
+
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+          echo "BRIEF_FILE=$BRIEF_FILE" >> "$GITHUB_ENV"
+          echo "NORMALIZED_BRIEF_FILE=$NORMALIZED_BRIEF_FILE" >> "$GITHUB_ENV"
+
+      - name: 4) Validate BuildBrief
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/validate_brief.py \
+            --brief-file "$BRIEF_FILE" \
+            --expected-project-id "${{ inputs.project_id }}" \
+            --normalized-output "$NORMALIZED_BRIEF_FILE" \
+            --result-file "$RESULT_DIR/validate_brief.json" \
+            $DRY_RUN_FLAG
+
+          IDEMPOTENCY_KEY="$(python - <<'PY'
+          import json
+          import os
+          with open(os.environ["NORMALIZED_BRIEF_FILE"], "r", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          print(payload["idempotency_key"])
+          PY
+          )"
+          echo "IDEMPOTENCY_KEY=$IDEMPOTENCY_KEY" >> "$GITHUB_ENV"
+
+      - name: 5) Create project repository
         env:
           GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
           TEMPLATE_OWNER: ${{ github.repository_owner }}
           TEMPLATE_REPO: ${{ github.event.repository.name }}
         run: |
+          set -euo pipefail
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
+
           python scripts/create_project.py \
             --project-id "${{ inputs.project_id }}" \
             --org "${{ github.repository_owner }}" \
+            --idempotency-key "$IDEMPOTENCY_KEY" \
+            --result-file "$RESULT_DIR/create_repo.json" \
             $DRY_RUN_FLAG
 
-      - name: 4) run inject_brief.py
+      - name: 6) Inject BuildBrief into template
         run: |
+          set -euo pipefail
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
-          BRIEF_FILE="$RUNNER_TEMP/build-brief.json"
-          printf '%s' '${{ inputs.build_brief_json }}' > "$BRIEF_FILE"
+
           python scripts/inject_brief.py \
+            --project-id "${{ inputs.project_id }}" \
             --project-dir "$TEMPLATE_PROJECT_DIR" \
-            --brief-file "$BRIEF_FILE" \
+            --brief-file "$NORMALIZED_BRIEF_FILE" \
+            --idempotency-key "$IDEMPOTENCY_KEY" \
+            --result-file "$RESULT_DIR/inject_brief.json" \
             $DRY_RUN_FLAG
 
-      - name: 5) run deploy.py
+      - name: 7) Deploy project
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
+          set -euo pipefail
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
+
           python scripts/deploy.py \
             --project-id "${{ inputs.project_id }}" \
+            --idempotency-key "$IDEMPOTENCY_KEY" \
+            --result-file "$RESULT_DIR/deploy.json" \
             $DRY_RUN_FLAG
+
+      - name: 8) Finalize factory response
+        if: always()
+        id: finalize
+        env:
+          PROJECT_ID_INPUT: ${{ inputs.project_id }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          fi
+          RESPONSE_FILE="$RESULT_DIR/factory-response.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          project_id = os.environ["PROJECT_ID_INPUT"]
+          result_dir = Path(os.environ["RESULT_DIR"])
+          result_dir.mkdir(parents=True, exist_ok=True)
+
+          step_files = [
+              ("validate_brief", result_dir / "validate_brief.json"),
+              ("create_repo", result_dir / "create_repo.json"),
+              ("inject_brief", result_dir / "inject_brief.json"),
+              ("deploy", result_dir / "deploy.json"),
+          ]
+
+          steps = []
+          overall_status = "success"
+          repo_url = ""
+          deployment_status = "not_started"
+          deployment_url = ""
+
+          for step_name, step_path in step_files:
+              if step_path.exists():
+                  data = json.loads(step_path.read_text(encoding="utf-8"))
+              else:
+                  data = {
+                      "project_id": project_id,
+                      "step": step_name,
+                      "status": "skipped",
+                      "mode": "unknown",
+                  }
+
+              steps.append(data)
+              if data.get("status") == "failed":
+                  overall_status = "failed"
+              if step_name == "create_repo":
+                  repo_url = str(data.get("repo_url", repo_url))
+              if step_name == "deploy":
+                  deployment_status = str(data.get("deployment_status", data.get("status", deployment_status)))
+                  deployment_url = str(data.get("deployment_url", deployment_url))
+
+          response = {
+              "project_id": project_id,
+              "repo_url": repo_url,
+              "status": overall_status,
+              "steps": steps,
+              "deployment": {
+                  "status": deployment_status,
+                  "url": deployment_url,
+              },
+          }
+
+          response_file = result_dir / "factory-response.json"
+          response_file.write_text(json.dumps(response, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+          print(json.dumps(response, ensure_ascii=True))
+          PY
+
+          echo "factory_response<<EOF" >> "$GITHUB_OUTPUT"
+          cat "$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          response_file = Path(os.environ["RESULT_DIR"]) / "factory-response.json"
+          response = json.loads(response_file.read_text(encoding="utf-8"))
+          project_id = response["project_id"]
+          repo_url = response.get("repo_url") or "not-created"
+          deployment_url = response.get("deployment", {}).get("url") or "not-available"
+
+          lines = [
+              f"PROJECT CREATED: {project_id}",
+              f"REPO: {repo_url}",
+              f"DEPLOYMENT: {deployment_url}",
+              "",
+              "NEXT STEP:",
+              "Validate landing page and start traffic",
+          ]
+          summary = "\n".join(lines)
+          print(summary)
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("## Factory Execution Summary\n\n")
+              for line in lines:
+                  handle.write(f"- {line}\n")
+          PY

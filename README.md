@@ -2,8 +2,9 @@
 
 This repository is a minimal factory that:
 1. Creates a GitHub project repository from a template
-2. Injects a BuildBrief into placeholder product files
-3. Triggers deployment through Vercel API
+2. Validates and normalizes BuildBrief input
+3. Injects BuildBrief into placeholder product files
+4. Triggers deployment through Vercel API
 
 ## Folder Structure
 
@@ -14,8 +15,10 @@ This repository is a minimal factory that:
 │       └── factory-build.yml
 ├── scripts/
 │   ├── create_project.py
+│   ├── factory_utils.py
 │   ├── inject_brief.py
-│   └── deploy.py
+│   ├── deploy.py
+│   └── validate_brief.py
 └── templates/
     └── saas-template/
         ├── .gitignore
@@ -47,8 +50,27 @@ This repository is a minimal factory that:
 
 ## Scripts
 
+### `scripts/validate_brief.py`
+Validates BuildBrief payloads before execution.
+
+Checks:
+- required fields: `project_id`, `product_name`, `problem`, `solution`, `cta`
+- `project_id` safe slug format
+- text field non-empty and length limits
+- key normalization (`snake_case` + `camelCase`)
+
+Produces:
+- normalized brief JSON file
+- idempotency key (`project_id` + hash(normalized brief))
+
 ### `scripts/create_project.py`
-Creates a GitHub repo from a template repo using GitHub API.
+Creates a GitHub repo from a template repo using GitHub API with duplicate protection.
+
+Behavior:
+- checks if the target repo already exists (idempotent reruns)
+- if repo exists, marks as already created and continues safely
+- retries transient GitHub API/network errors
+- emits structured JSON logs and optional result JSON file
 
 Example:
 ```bash
@@ -66,6 +88,11 @@ Takes BuildBrief JSON and generates:
 - `PRODUCT_BRIEF.md`
 - `product.config.json`
 
+Behavior:
+- strict required-field checks (no silent placeholder fallback)
+- atomic writes for safe reruns
+- structured JSON logs + optional result JSON file
+
 Example:
 ```bash
 python scripts/inject_brief.py \
@@ -75,6 +102,11 @@ python scripts/inject_brief.py \
 
 ### `scripts/deploy.py`
 Triggers deployment via Vercel Deploy Hook API.
+
+Behavior:
+- dry-run / production mode
+- retry transient deployment trigger failures
+- structured JSON logs + optional result JSON file
 
 Example:
 ```bash
@@ -96,9 +128,26 @@ Manual trigger inputs:
 Execution order:
 1. Checkout
 2. Setup Python
-3. Run `create_project.py`
-4. Run `inject_brief.py`
-5. Run `deploy.py`
+3. Initialize run context (unique temp files, secret masking)
+4. Run `validate_brief.py`
+5. Run `create_project.py`
+6. Run `inject_brief.py`
+7. Run `deploy.py`
+8. Generate final factory response (JSON + human summary)
+
+Final workflow response shape:
+```json
+{
+  "project_id": "acme-saas",
+  "repo_url": "https://github.com/org/acme-saas",
+  "status": "success",
+  "steps": [],
+  "deployment": {
+    "status": "triggered",
+    "url": "https://acme.vercel.app"
+  }
+}
+```
 
 ## Required GitHub Secrets
 
