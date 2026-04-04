@@ -1,85 +1,65 @@
 #!/usr/bin/env python3
 """
-deploy.py – Deploy a project directory to Vercel.
+Trigger a Vercel deployment via Deploy Hook API.
 
-Usage:
-    python scripts/deploy.py --project-dir ./my-project --project-id my-saas [--dry-run]
-
-Environment variables required (unless --dry-run):
-    VERCEL_TOKEN – Vercel personal access token
-    VERCEL_ORG_ID – (optional) Vercel team/org ID
+Required environment variables (unless --dry-run):
+  - VERCEL_DEPLOY_HOOK_URL
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import os
-import subprocess
-import sys
-from pathlib import Path
+import urllib.error
+import urllib.request
 
 
-def deploy(project_dir: Path, project_id: str, token: str, org_id: str = "", prod: bool = True) -> str:
-    """Run `vercel deploy` and return the deployment URL."""
-    env = os.environ.copy()
-    env["VERCEL_TOKEN"] = token
-    if org_id:
-        env["VERCEL_ORG_ID"] = org_id
+def trigger_deploy(project_id: str, hook_url: str) -> str:
+    payload = {
+        "project_id": project_id,
+        "trigger": "github-factory",
+    }
+    request = urllib.request.Request(
+        url=hook_url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
 
-    # Pass the token only via environment to avoid leaking it in process listings.
-    cmd = ["vercel", "--yes"]
-    if prod:
-        cmd.append("--prod")
-    if project_id:
-        cmd += ["--name", project_id]
-
-    result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True, env=env)
-    if result.returncode != 0:
-        print(result.stderr.rstrip(), file=sys.stderr)
-        sys.exit(f"[error] Vercel deploy failed (exit {result.returncode})")
-
-    # Extract the deployment URL (first https:// line from the end of stdout).
-    url = ""
-    for line in reversed(result.stdout.splitlines()):
-        line = line.strip()
-        if line.startswith("http://") or line.startswith("https://"):
-            url = line
-            break
-    if not url:
-        print(result.stdout.rstrip(), file=sys.stderr)
-        sys.exit("[error] Could not parse a deployment URL from Vercel output.")
-    print(f"[ok] Deployed: {url}")
-    return url
+    try:
+        with urllib.request.urlopen(request) as response:
+            body = response.read().decode("utf-8")
+            if not body:
+                return "[ok] Deployment trigger accepted."
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                return body
+            return json.dumps(parsed, ensure_ascii=False)
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"[error] Vercel deploy trigger failed ({exc.code}): {error_body}") from exc
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Deploy a project to Vercel")
-    parser.add_argument("--project-dir", required=True, help="Path to the project to deploy")
-    parser.add_argument("--project-id", required=True, help="Vercel project name / slug")
-    parser.add_argument("--no-prod", action="store_true", help="Deploy to preview instead of production")
-    parser.add_argument("--dry-run", action="store_true", help="Print what would happen without deploying")
+    parser = argparse.ArgumentParser(description="Trigger a Vercel deployment via Deploy Hook API")
+    parser.add_argument("--project-id", required=True, help="Project identifier for logging and payload metadata")
+    parser.add_argument("--dry-run", action="store_true", help="Validate inputs and print intended action")
     args = parser.parse_args()
 
-    token = os.environ.get("VERCEL_TOKEN", "")
-    org_id = os.environ.get("VERCEL_ORG_ID", "")
-
-    project_dir = Path(args.project_dir).expanduser().resolve()
-    if not project_dir.is_dir():
-        sys.exit(f"[error] project-dir does not exist: {project_dir}")
-
+    hook_url = os.environ.get("VERCEL_DEPLOY_HOOK_URL", "").strip()
     if args.dry_run:
-        env_note = "VERCEL_TOKEN set" if token else "VERCEL_TOKEN NOT set"
-        print(f"[dry-run] Would deploy {project_dir} as '{args.project_id}' ({env_note})")
+        configured = "set" if hook_url else "missing"
+        print(f"[dry-run] Would trigger Vercel deploy hook for '{args.project_id}' (hook: {configured})")
         return
 
-    if not token:
-        sys.exit("[error] VERCEL_TOKEN environment variable is not set.")
+    if not hook_url:
+        raise SystemExit("[error] VERCEL_DEPLOY_HOOK_URL is required.")
 
-    deploy(
-        project_dir=project_dir,
-        project_id=args.project_id,
-        token=token,
-        org_id=org_id,
-        prod=not args.no_prod,
-    )
+    response = trigger_deploy(project_id=args.project_id, hook_url=hook_url)
+    print(f"[ok] Deployment triggered for {args.project_id}")
+    print(response)
 
 
 if __name__ == "__main__":

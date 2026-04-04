@@ -1,7 +1,7 @@
 {
-  "product_name": "{{PRODUCT_NAME}}",
-  "product_tagline": "{{PRODUCT_TAGLINE}}",
-  "product_url": "{{PRODUCT_URL}}",
-  "vercel_project_id": "{{VERCEL_PROJECT_ID}}",
-  "features": []
+  "project_id": "replace-with-project-id",
+  "product_name": "replace-with-product-name",
+  "problem": "replace-with-problem",
+  "solution": "replace-with-solution",
+  "cta": "replace-with-cta-text"
 }
