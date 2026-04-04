@@ -1,0 +1,104 @@
+name: factory-autonomous-runner
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      run_full_test_suite:
+        description: "Run scripts/run_factory_tests.py after autonomous gate"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+concurrency:
+  group: factory-autonomous-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run autonomous source-score-gate loop
+        env:
+          RUN_FULL_TEST_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_test_suite || 'true' }}
+        run: |
+          set -euo pipefail
+          RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-autonomous-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          SELECTED_BRIEF="$RESULT_DIR/selected_brief.json"
+          STATE_DB="$RESULT_DIR/lifecycle.sqlite"
+          TIMESTAMP_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          python scripts/idea_source_engine.py \
+            --ideas-file "test_data/autonomous_ideas.json" \
+            --selected-brief-file "$SELECTED_BRIEF" \
+            --result-file "$RESULT_DIR/idea_selection.json" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+          PROJECT_ID="$(python - <<'PY'
+          import json, os
+          with open(os.environ["SELECTED_BRIEF"], "r", encoding="utf-8") as handle:
+              print(json.load(handle)["project_id"])
+          PY
+          )"
+          echo "PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
+
+          python scripts/lifecycle_orchestrator.py \
+            --state-db "$STATE_DB" \
+            --project-id "$PROJECT_ID" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --to-state idea \
+            --reason "autonomous runner seeded idea" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --metadata-json "{\"source\":\"autonomous_runner\"}" \
+            > "$RESULT_DIR/lifecycle_idea.json"
+
+          python scripts/scoring_engine.py \
+            --brief-file "$SELECTED_BRIEF" \
+            --result-file "$RESULT_DIR/scoring.json"
+
+          python scripts/validate_business_gate.py \
+            --brief-file "$SELECTED_BRIEF" \
+            --result-file "$RESULT_DIR/business_gate.json" \
+            --state-db "$STATE_DB" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --run-mode dry_run
+
+          if [ "$RUN_FULL_TEST_SUITE" = "true" ]; then
+            python scripts/run_factory_tests.py > "$RESULT_DIR/test_suite.log" 2>&1
+            cat "$RESULT_DIR/test_suite.log"
+          fi
+
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+          echo "SELECTED_BRIEF=$SELECTED_BRIEF" >> "$GITHUB_ENV"
+
+      - name: Upload autonomous artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-autonomous-runner-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ env.RESULT_DIR }}/*.json
+            ${{ env.RESULT_DIR }}/*.log
+            ${{ env.RESULT_DIR }}/lifecycle.sqlite

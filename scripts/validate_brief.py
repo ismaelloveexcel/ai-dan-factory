@@ -16,7 +16,19 @@ from factory_utils import log_event, maybe_write_result, normalize_text, stable_
 STEP_NAME = "validate_brief"
 REPO_SLUG_REGEX = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
-REQUIRED_FIELDS = ("project_id", "product_name", "problem", "solution", "cta")
+REQUIRED_FIELDS = (
+    "project_id",
+    "product_name",
+    "problem",
+    "solution",
+    "cta",
+    "source_type",
+    "reference_context",
+    "demand_level",
+    "monetization_proof",
+    "market_saturation",
+    "differentiation",
+)
 
 FIELD_ALIASES = {
     "project_id": {"project_id", "projectid", "project", "projectslug", "slug"},
@@ -24,6 +36,12 @@ FIELD_ALIASES = {
     "problem": {"problem"},
     "solution": {"solution"},
     "cta": {"cta", "cta_text", "ctatext", "call_to_action", "calltoaction"},
+    "source_type": {"source_type", "sourcetype"},
+    "reference_context": {"reference_context", "referencecontext"},
+    "demand_level": {"demand_level", "demandlevel"},
+    "monetization_proof": {"monetization_proof", "monetizationproof"},
+    "market_saturation": {"market_saturation", "marketsaturation"},
+    "differentiation": {"differentiation"},
 }
 
 FIELD_LIMITS = {
@@ -31,6 +49,7 @@ FIELD_LIMITS = {
     "problem": (10, 1500),
     "solution": (10, 1500),
     "cta": (2, 80),
+    "reference_context": (5, 2000),
 }
 
 
@@ -83,6 +102,33 @@ def _normalize_payload(raw: dict[str, Any]) -> dict[str, str]:
         value = normalized[field_name]
         if len(value) < min_len or len(value) > max_len:
             raise ValidationError(f"Field '{field_name}' must be between {min_len} and {max_len} characters.")
+
+    source_type = normalized["source_type"].upper()
+    if source_type not in {"TREND", "COMPETITOR", "GAP", "EXISTING_PRODUCT"}:
+        raise ValidationError(
+            "Field 'source_type' must be one of: TREND, COMPETITOR, GAP, EXISTING_PRODUCT."
+        )
+    normalized["source_type"] = source_type
+
+    demand_level = normalized["demand_level"].upper()
+    if demand_level not in {"HIGH", "MEDIUM", "LOW"}:
+        raise ValidationError("Field 'demand_level' must be one of: HIGH, MEDIUM, LOW.")
+    normalized["demand_level"] = demand_level
+
+    monetization_proof = normalized["monetization_proof"].upper()
+    if monetization_proof not in {"YES", "NO"}:
+        raise ValidationError("Field 'monetization_proof' must be one of: YES, NO.")
+    normalized["monetization_proof"] = monetization_proof
+
+    market_saturation = normalized["market_saturation"].upper()
+    if market_saturation not in {"LOW", "MEDIUM", "HIGH"}:
+        raise ValidationError("Field 'market_saturation' must be one of: LOW, MEDIUM, HIGH.")
+    normalized["market_saturation"] = market_saturation
+
+    differentiation = normalized["differentiation"].upper()
+    if differentiation not in {"STRONG", "WEAK"}:
+        raise ValidationError("Field 'differentiation' must be one of: STRONG, WEAK.")
+    normalized["differentiation"] = differentiation
 
     return normalized
 
