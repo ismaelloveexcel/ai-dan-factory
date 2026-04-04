@@ -98,6 +98,15 @@ def _normalize_payload(raw: dict[str, Any]) -> dict[str, str]:
         )
     normalized["project_id"] = project_id
 
+    # Preserve optional scoring fields when present in the input.
+    OPTIONAL_PASSTHROUGH = ("build_complexity", "speed_to_revenue")
+    for opt_field in OPTIONAL_PASSTHROUGH:
+        if opt_field in normalized:
+            continue
+        raw_value = raw.get(opt_field, "")
+        if isinstance(raw_value, str) and raw_value.strip():
+            normalized[opt_field] = normalize_text(raw_value)
+
     for field_name, (min_len, max_len) in FIELD_LIMITS.items():
         value = normalized[field_name]
         if len(value) < min_len or len(value) > max_len:

@@ -89,7 +89,7 @@ def read_json(path: Path) -> dict[str, object]:
 
 
 def compile_check() -> None:
-    print("==> [1/7] Running script syntax checks")
+    print("==> [1/9] Running script syntax checks")
     scripts = [
         "scripts/factory_utils.py",
         "scripts/idea_source_engine.py",
@@ -107,13 +107,17 @@ def compile_check() -> None:
         "scripts/create_project.py",
         "scripts/inject_brief.py",
         "scripts/deploy.py",
+        "scripts/quality_gate.py",
+        "scripts/build_economics.py",
+        "scripts/distribution_engine.py",
+        "scripts/build_control.py",
         "scripts/run_factory_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
 
 
 def payload_schema_check() -> None:
-    print("==> [2/7] Validating test payload schemas")
+    print("==> [2/9] Validating test payload schemas")
     payloads = [LIVE_TEST_BRIEF, AIDAN_DRY_RUN_BRIEF, AIDAN_LIVE_BRIEF]
     required = (
         "project_id",
@@ -148,7 +152,7 @@ def payload_schema_check() -> None:
 
 
 def idea_source_and_scoring_tests() -> None:
-    print("==> [3/7] Running idea source + scoring tests")
+    print("==> [3/9] Running idea source + scoring tests")
     with tempfile.TemporaryDirectory(prefix="factory-idea-source-") as tmp_dir:
         tmp = Path(tmp_dir)
         selected = tmp / "selected.json"
@@ -195,7 +199,7 @@ def idea_source_and_scoring_tests() -> None:
 
 
 def business_gate_and_lifecycle_tests() -> None:
-    print("==> [4/7] Running business gate + lifecycle state tests")
+    print("==> [4/9] Running business gate + lifecycle state tests")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -303,7 +307,7 @@ def business_gate_and_lifecycle_tests() -> None:
 
 
 def full_dry_run_pipeline() -> None:
-    print("==> [5/7] Running happy-path dry-run execution tests")
+    print("==> [5/9] Running happy-path dry-run execution tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-") as tmp_dir:
         tmp = Path(tmp_dir)
         normalized = tmp / "normalized.json"
@@ -421,7 +425,7 @@ def full_dry_run_pipeline() -> None:
 
 
 def monitoring_and_summary_tests() -> None:
-    print("==> [6/7] Running monitor/scale/portfolio tests")
+    print("==> [6/9] Running monitor/scale/portfolio tests")
     with tempfile.TemporaryDirectory(prefix="factory-monitor-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -521,7 +525,7 @@ def monitoring_and_summary_tests() -> None:
 
 
 def negative_guard_tests() -> None:
-    print("==> [7/7] Running negative guard tests")
+    print("==> [7/9] Running negative guard tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-negative-") as tmp_dir:
         tmp = Path(tmp_dir)
         invalid_brief = tmp / "invalid_brief.json"
@@ -660,6 +664,432 @@ def negative_guard_tests() -> None:
         )
 
 
+def quality_economics_distribution_tests() -> None:
+    print("==> [8/9] Running quality gate + build economics + distribution tests")
+    with tempfile.TemporaryDirectory(prefix="factory-qed-") as tmp_dir:
+        tmp = Path(tmp_dir)
+
+        # Create normalized brief for testing
+        normalized = tmp / "normalized.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/validate_brief.py",
+                "--brief-file",
+                str(LIVE_TEST_BRIEF),
+                "--expected-project-id",
+                "test-001",
+                "--normalized-output",
+                str(normalized),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Generate business output
+        business_output = tmp / "business_output.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/business_output_engine.py",
+                "--brief-file",
+                str(normalized),
+                "--output-file",
+                str(business_output),
+                "--result-file",
+                str(tmp / "business_output_result.json"),
+            ],
+            expect_success=True,
+        )
+
+        # Test quality gate
+        quality_result = tmp / "quality_gate.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/quality_gate.py",
+                "--brief-file",
+                str(normalized),
+                "--business-output-file",
+                str(business_output),
+                "--health-status",
+                "simulated",
+                "--result-file",
+                str(quality_result),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        quality = read_json(quality_result)
+        score = int(quality.get("quality_score", 0))
+        if score < 0 or score > 10:
+            raise TestFailure("quality_gate score must be between 0 and 10")
+        if quality.get("quality_decision") not in ("BLOCK", "IMPROVE", "PROCEED"):
+            raise TestFailure("quality_gate decision must be BLOCK/IMPROVE/PROCEED")
+
+        # Test build economics
+        economics_result = tmp / "build_economics.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/build_economics.py",
+                "--brief-file",
+                str(normalized),
+                "--result-file",
+                str(economics_result),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        economics = read_json(economics_result)
+        if economics.get("economics_decision") not in ("REJECT", "HOLD", "PRIORITIZE"):
+            raise TestFailure("build_economics decision must be REJECT/HOLD/PRIORITIZE")
+        roi = float(economics.get("roi", 0))
+        if roi < 0:
+            raise TestFailure("build_economics ROI cannot be negative for valid brief")
+
+        # Test distribution engine
+        distribution_result = tmp / "distribution.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/distribution_engine.py",
+                "--brief-file",
+                str(normalized),
+                "--business-output-file",
+                str(business_output),
+                "--deployment-url",
+                "https://example.com/test-001",
+                "--result-file",
+                str(distribution_result),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        distribution = read_json(distribution_result)
+        if not distribution.get("landing_content"):
+            raise TestFailure("distribution must include landing_content")
+        if not distribution.get("first_post"):
+            raise TestFailure("distribution must include first_post")
+        outreach = distribution.get("outreach_targets")
+        if not isinstance(outreach, list) or len(outreach) < 5:
+            raise TestFailure("distribution must include at least 5 outreach targets")
+
+        # Test build control
+        state_db = tmp / "control_state.sqlite"
+        control_result = tmp / "build_control.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/build_control.py",
+                "--brief-file",
+                str(normalized),
+                "--state-db",
+                str(state_db),
+                "--business-score",
+                "8",
+                "--result-file",
+                str(control_result),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        control = read_json(control_result)
+        if control.get("control_decision") not in ("ALLOWED", "BLOCKED"):
+            raise TestFailure("build_control decision must be ALLOWED/BLOCKED")
+        if not control.get("priority"):
+            raise TestFailure("build_control must include priority")
+
+
+def e2e_simulation_tests() -> None:
+    print("==> [9/9] Running end-to-end pipeline simulation")
+    with tempfile.TemporaryDirectory(prefix="factory-e2e-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        state_db = tmp / "e2e_state.sqlite"
+        normalized = tmp / "normalized.json"
+        business_output = tmp / "business_output.json"
+        template_copy = tmp / "template-copy"
+        shutil.copytree(TEMPLATE_DIR, template_copy)
+
+        # Step 1: Validate brief
+        run_command(
+            [
+                sys.executable,
+                "scripts/validate_brief.py",
+                "--brief-file",
+                str(LIVE_TEST_BRIEF),
+                "--expected-project-id",
+                "test-001",
+                "--normalized-output",
+                str(normalized),
+                "--result-file",
+                str(tmp / "validate.json"),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 2: Initialize lifecycle
+        run_command(
+            [
+                sys.executable,
+                "scripts/lifecycle_orchestrator.py",
+                "--state-db",
+                str(state_db),
+                "--project-id",
+                "test-001",
+                "--run-id",
+                "e2e-001",
+                "--run-attempt",
+                "1",
+                "--to-state",
+                "idea",
+                "--reason",
+                "E2E test init",
+                "--timestamp-utc",
+                utc_now(),
+            ],
+            expect_success=True,
+        )
+
+        # Step 3: Business gate
+        run_command(
+            [
+                sys.executable,
+                "scripts/validate_business_gate.py",
+                "--brief-file",
+                str(normalized),
+                "--result-file",
+                str(tmp / "gate.json"),
+                "--state-db",
+                str(state_db),
+                "--workflow-run-id",
+                "e2e-001",
+                "--workflow-run-attempt",
+                "1",
+                "--workflow-url",
+                "https://example/e2e",
+                "--timestamp-utc",
+                utc_now(),
+            ],
+            expect_success=True,
+        )
+        gate = read_json(tmp / "gate.json")
+        if gate.get("decision") != "APPROVE":
+            raise TestFailure(f"E2E: Expected APPROVE for live_test_brief, got {gate.get('decision')}")
+
+        # Step 4: Build economics
+        run_command(
+            [
+                sys.executable,
+                "scripts/build_economics.py",
+                "--brief-file",
+                str(normalized),
+                "--result-file",
+                str(tmp / "economics.json"),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 5: Build control
+        run_command(
+            [
+                sys.executable,
+                "scripts/build_control.py",
+                "--brief-file",
+                str(normalized),
+                "--state-db",
+                str(state_db),
+                "--business-score",
+                str(gate.get("score", 0)),
+                "--result-file",
+                str(tmp / "control.json"),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 6: Lifecycle to building
+        run_command(
+            [
+                sys.executable,
+                "scripts/lifecycle_orchestrator.py",
+                "--state-db",
+                str(state_db),
+                "--project-id",
+                "test-001",
+                "--run-id",
+                "e2e-001",
+                "--run-attempt",
+                "1",
+                "--to-state",
+                "building",
+                "--reason",
+                "E2E build stage",
+                "--timestamp-utc",
+                utc_now(),
+            ],
+            expect_success=True,
+        )
+
+        # Step 7: Create repo (dry-run)
+        run_command(
+            [
+                sys.executable,
+                "scripts/create_project.py",
+                "--project-id",
+                "test-001",
+                "--org",
+                "example-org",
+                "--template-owner",
+                "example-owner",
+                "--template-repo",
+                "example-template",
+                "--result-file",
+                str(tmp / "create.json"),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 8: Inject brief (dry-run)
+        run_command(
+            [
+                sys.executable,
+                "scripts/inject_brief.py",
+                "--project-id",
+                "test-001",
+                "--project-dir",
+                str(template_copy),
+                "--brief-file",
+                str(normalized),
+                "--result-file",
+                str(tmp / "inject.json"),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 9: Generate business output
+        run_command(
+            [
+                sys.executable,
+                "scripts/business_output_engine.py",
+                "--brief-file",
+                str(normalized),
+                "--output-file",
+                str(business_output),
+                "--result-file",
+                str(tmp / "bo_result.json"),
+            ],
+            expect_success=True,
+        )
+
+        # Step 10: Deploy (dry-run)
+        run_command(
+            [
+                sys.executable,
+                "scripts/deploy.py",
+                "--project-id",
+                "test-001",
+                "--result-file",
+                str(tmp / "deploy.json"),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 11: Health check (dry-run)
+        run_command(
+            [
+                sys.executable,
+                "scripts/deploy_health_check.py",
+                "--project-id",
+                "test-001",
+                "--deployment-url",
+                "https://example.com/test-001",
+                "--result-file",
+                str(tmp / "health.json"),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 12: Quality gate
+        run_command(
+            [
+                sys.executable,
+                "scripts/quality_gate.py",
+                "--brief-file",
+                str(normalized),
+                "--business-output-file",
+                str(business_output),
+                "--health-status",
+                "simulated",
+                "--result-file",
+                str(tmp / "quality.json"),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 13: Distribution
+        run_command(
+            [
+                sys.executable,
+                "scripts/distribution_engine.py",
+                "--brief-file",
+                str(normalized),
+                "--business-output-file",
+                str(business_output),
+                "--deployment-url",
+                "https://example.com/test-001",
+                "--result-file",
+                str(tmp / "distribution.json"),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Verify all result files exist
+        expected_files = [
+            "validate.json",
+            "gate.json",
+            "economics.json",
+            "control.json",
+            "create.json",
+            "inject.json",
+            "bo_result.json",
+            "deploy.json",
+            "health.json",
+            "quality.json",
+            "distribution.json",
+        ]
+        for f in expected_files:
+            path = tmp / f
+            if not path.is_file():
+                raise TestFailure(f"E2E: Missing expected result file: {f}")
+
+        print("  E2E simulation: SUCCESS (all 13 steps completed)")
+
+
 def main() -> None:
     try:
         compile_check()
@@ -669,6 +1099,8 @@ def main() -> None:
         full_dry_run_pipeline()
         monitoring_and_summary_tests()
         negative_guard_tests()
+        quality_economics_distribution_tests()
+        e2e_simulation_tests()
         print("\nAll factory automation tests passed.")
     except TestFailure as exc:
         print(f"\nTEST FAILURE: {exc}", file=sys.stderr)
