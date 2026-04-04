@@ -158,6 +158,30 @@ Final workflow response shape:
 - `FACTORY_GITHUB_TOKEN`
 - `VERCEL_DEPLOY_HOOK_URL`
 
+## Automated Testing (No Manual Steps)
+
+Run all factory tests with one command:
+
+```bash
+python3 scripts/run_factory_tests.py
+```
+
+What this automates:
+- Python syntax checks for all factory scripts
+- BuildBrief payload validity check
+- Negative validation case (invalid brief must fail)
+- Full dry-run pipeline simulation:
+  - validate brief
+  - create repo (simulated)
+  - inject brief (simulated)
+  - deploy trigger (simulated)
+
+CI automation:
+- `.github/workflows/factory-ci.yml` runs these tests automatically on:
+  - pushes to `main`
+  - pull requests targeting `main`
+  - manual trigger (`workflow_dispatch`)
+
 ## First Live Run
 
 Use this run to verify the first real execution without changing factory logic.
@@ -166,8 +190,9 @@ Use this run to verify the first real execution without changing factory logic.
 2. Click **Run workflow** (recommended branch: `main`).
 3. Use these inputs:
    - `project_id`: `test-001`
-   - `build_brief_json`: contents of `test_data/live_test_brief.json`
+   - `build_brief_json`: leave empty and set `use_default_test_payload=true`, or paste contents of `test_data/live_test_brief.json`
    - `dry_run`: `false`
+   - `use_default_test_payload`: `true` (recommended for first live run)
 
 Reference payload:
 

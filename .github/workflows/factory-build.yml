@@ -9,8 +9,17 @@ on:
         type: string
       build_brief_json:
         description: "BuildBrief JSON payload"
-        required: true
+        required: false
+        default: ""
         type: string
+      test_mode:
+        description: "Run automated checks only (no live actions)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       dry_run:
         description: "Run without side effects"
         required: true
@@ -42,6 +51,7 @@ jobs:
       - name: 3) Initialize run context
         env:
           BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          TEST_MODE: ${{ inputs.test_mode }}
           FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
@@ -49,7 +59,15 @@ jobs:
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
           BRIEF_FILE="$(mktemp "$RUNNER_TEMP/build-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
           NORMALIZED_BRIEF_FILE="$(mktemp "$RUNNER_TEMP/normalized-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
-          printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
+          if [ "$TEST_MODE" = "true" ]; then
+            cp "test_data/live_test_brief.json" "$BRIEF_FILE"
+          else
+            if [ -z "${BUILD_BRIEF_JSON:-}" ]; then
+              echo "build_brief_json is required when test_mode=false" >&2
+              exit 1
+            fi
+            printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
+          fi
 
           echo "::add-mask::$FACTORY_GITHUB_TOKEN"
           echo "::add-mask::$VERCEL_DEPLOY_HOOK_URL"
@@ -61,6 +79,10 @@ jobs:
       - name: 4) Validate BuildBrief
         run: |
           set -euo pipefail
+          PROJECT_ID_INPUT="${{ inputs.project_id }}"
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            PROJECT_ID_INPUT="test-001"
+          fi
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
@@ -68,7 +90,7 @@ jobs:
 
           python scripts/validate_brief.py \
             --brief-file "$BRIEF_FILE" \
-            --expected-project-id "${{ inputs.project_id }}" \
+            --expected-project-id "$PROJECT_ID_INPUT" \
             --normalized-output "$NORMALIZED_BRIEF_FILE" \
             --result-file "$RESULT_DIR/validate_brief.json" \
             $DRY_RUN_FLAG
@@ -90,13 +112,17 @@ jobs:
           TEMPLATE_REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
+          PROJECT_ID_INPUT="${{ inputs.project_id }}"
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            PROJECT_ID_INPUT="test-001"
+          fi
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
 
           python scripts/create_project.py \
-            --project-id "${{ inputs.project_id }}" \
+            --project-id "$PROJECT_ID_INPUT" \
             --org "${{ github.repository_owner }}" \
             --idempotency-key "$IDEMPOTENCY_KEY" \
             --result-file "$RESULT_DIR/create_repo.json" \
@@ -105,13 +131,17 @@ jobs:
       - name: 6) Inject BuildBrief into template
         run: |
           set -euo pipefail
+          PROJECT_ID_INPUT="${{ inputs.project_id }}"
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            PROJECT_ID_INPUT="test-001"
+          fi
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
 
           python scripts/inject_brief.py \
-            --project-id "${{ inputs.project_id }}" \
+            --project-id "$PROJECT_ID_INPUT" \
             --project-dir "$TEMPLATE_PROJECT_DIR" \
             --brief-file "$NORMALIZED_BRIEF_FILE" \
             --idempotency-key "$IDEMPOTENCY_KEY" \
@@ -123,13 +153,17 @@ jobs:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
           set -euo pipefail
+          PROJECT_ID_INPUT="${{ inputs.project_id }}"
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            PROJECT_ID_INPUT="test-001"
+          fi
           DRY_RUN_FLAG=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
 
           python scripts/deploy.py \
-            --project-id "${{ inputs.project_id }}" \
+            --project-id "$PROJECT_ID_INPUT" \
             --idempotency-key "$IDEMPOTENCY_KEY" \
             --result-file "$RESULT_DIR/deploy.json" \
             $DRY_RUN_FLAG
