@@ -140,6 +140,7 @@ jobs:
         env:
           PROJECT_ID_INPUT: ${{ inputs.project_id }}
           RESULT_DIR: ${{ env.RESULT_DIR }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
           if [ -z "${RESULT_DIR:-}" ]; then
@@ -163,7 +164,7 @@ jobs:
           ]
 
           steps = []
-          overall_status = "success"
+          overall_status = "failed" if os.environ.get("JOB_STATUS") == "failure" else "success"
           repo_url = ""
           deployment_status = "not_started"
           deployment_url = ""
