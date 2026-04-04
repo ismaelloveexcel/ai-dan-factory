@@ -1,120 +1,170 @@
 #!/usr/bin/env python3
 """
-inject_brief.py – Inject a BuildBrief (JSON) into the saas-template placeholder files.
-
-Usage:
-    python scripts/inject_brief.py \
-        --project-dir ./my-project \
-        --brief-file /tmp/brief.json
-
-    # Or pass JSON inline (only safe for values without single quotes):
-    python scripts/inject_brief.py \
-        --project-dir ./my-project \
-        --brief '{"product_name": "Acme", "product_tagline": "Ship faster"}'
-
-The script replaces {{KEY}} tokens in:
-    - PRODUCT_BRIEF.md
-    - product.config.json
-    - app/page.tsx
-    - app/layout.tsx
+Generate PRODUCT_BRIEF.md and product.config.json from a validated BuildBrief payload.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
-import sys
 from pathlib import Path
+from typing import Any
 
-# Files inside the project directory that contain placeholders
-INJECTABLE_FILES = [
-    "PRODUCT_BRIEF.md",
-    "product.config.json",
-    "app/page.tsx",
-    "app/layout.tsx",
-]
+from factory_utils import atomic_write_text, log_event, maybe_write_result, normalize_text
 
-# Map brief keys → template tokens
-TOKEN_MAP = {
-    "product_name": "PRODUCT_NAME",
-    "product_tagline": "PRODUCT_TAGLINE",
-    "product_url": "PRODUCT_URL",
-    "vercel_project_id": "VERCEL_PROJECT_ID",
-    "problem": "PROBLEM",
-    "solution": "SOLUTION",
-    "target_audience": "TARGET_AUDIENCE",
-    "key_features": "KEY_FEATURES",
-    "pricing": "PRICING",
-}
+STEP_NAME = "inject_brief"
+REQUIRED_FIELDS = ("project_id", "product_name", "problem", "solution", "cta")
 
 
-def inject(project_dir: Path, brief: dict, dry_run: bool = False) -> None:
-    for relative_path in INJECTABLE_FILES:
-        file_path = project_dir / relative_path
-        if not file_path.exists():
-            print(f"[skip] {file_path} not found", file=sys.stderr)
-            continue
-
-        content = file_path.read_text(encoding="utf-8")
-        original = content
-
-        for brief_key, token in TOKEN_MAP.items():
-            value = brief.get(brief_key)
-            if value is None:
-                continue
-            # Stringify lists/dicts for simple injection.
-            # NOTE: In TypeScript/JSX files this only works safely when the
-            # placeholder appears inside a string literal.  If you need to
-            # inject a JavaScript value (array/object literal) directly, do
-            # the substitution in a separate, format-aware step.
-            if isinstance(value, (list, dict)):
-                value = json.dumps(value, ensure_ascii=False)
-            content = content.replace("{{" + token + "}}", str(value))
-
-        # Warn about any remaining unfilled tokens
-        remaining = re.findall(r"\{\{[A-Z_]+\}\}", content)
-        if remaining:
-            tokens = ", ".join(set(remaining))
-            print(f"[warn] {relative_path}: unfilled tokens: {tokens}", file=sys.stderr)
-
-        if content == original:
-            print(f"[skip] {relative_path}: no changes")
-            continue
-
-        if dry_run:
-            print(f"[dry-run] Would update {relative_path}")
-        else:
-            file_path.write_text(content, encoding="utf-8")
-            print(f"[ok] Updated {relative_path}")
+class BriefInjectionError(Exception):
+    pass
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Inject a BuildBrief into saas-template files")
-    parser.add_argument("--project-dir", required=True, help="Path to the project directory (clone of saas-template)")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--brief", help="BuildBrief as a JSON string")
-    group.add_argument("--brief-file", help="Path to a file containing the BuildBrief JSON (preferred; avoids shell-quoting issues)")
-    parser.add_argument("--dry-run", action="store_true", help="Print what would change without writing files")
-    args = parser.parse_args()
+def _render_product_brief(brief: dict[str, str]) -> str:
+    return (
+        "# Product Brief\n\n"
+        "## Product Name\n"
+        f"{brief['product_name']}\n\n"
+        "## Problem\n"
+        f"{brief['problem']}\n\n"
+        "## Solution\n"
+        f"{brief['solution']}\n\n"
+        "## CTA\n"
+        f"{brief['cta']}\n"
+    )
 
+
+def _render_product_config(brief: dict[str, str]) -> str:
+    payload = {
+        "project_id": brief["project_id"],
+        "product_name": brief["product_name"],
+        "problem": brief["problem"],
+        "solution": brief["solution"],
+        "cta": brief["cta"],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=True) + "\n"
+
+
+def _load_brief(args: argparse.Namespace) -> dict[str, Any]:
     if args.brief_file:
         brief_path = Path(args.brief_file).expanduser().resolve()
         if not brief_path.is_file():
-            sys.exit(f"[error] --brief-file does not exist: {brief_path}")
+            raise BriefInjectionError(f"--brief-file does not exist: {brief_path}")
         raw = brief_path.read_text(encoding="utf-8")
     else:
-        raw = args.brief  # type: ignore[assignment]
+        raw = args.brief_json
 
     try:
-        brief = json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        sys.exit(f"[error] Brief is not valid JSON: {exc}")
+        raise BriefInjectionError(f"BuildBrief JSON is invalid: {exc}") from exc
+    if not isinstance(data, dict):
+        raise BriefInjectionError("BuildBrief JSON must be an object.")
+    return data
 
-    project_dir = Path(args.project_dir).expanduser().resolve()
-    if not project_dir.is_dir():
-        sys.exit(f"[error] project-dir does not exist: {project_dir}")
 
-    inject(project_dir=project_dir, brief=brief, dry_run=args.dry_run)
+def _normalize_required_brief(data: dict[str, Any]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for field_name in REQUIRED_FIELDS:
+        raw_value = data.get(field_name)
+        if not isinstance(raw_value, str):
+            raise BriefInjectionError(f"Field '{field_name}' must be a non-empty string.")
+        value = normalize_text(raw_value)
+        if not value:
+            raise BriefInjectionError(f"Field '{field_name}' must be a non-empty string.")
+        normalized[field_name] = value
+    return normalized
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Inject BuildBrief data into template files")
+    parser.add_argument("--project-id", default="", help="Expected project id for consistency checks")
+    parser.add_argument("--project-dir", required=True, help="Path to the project root")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--brief-json", help="BuildBrief JSON string")
+    group.add_argument("--brief-file", help="Path to BuildBrief JSON file")
+    parser.add_argument("--idempotency-key", default="", help="Idempotency key for deduplication/audit")
+    parser.add_argument("--result-file", default="", help="Path to write step result JSON")
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without writing files")
+    args = parser.parse_args()
+
+    mode = "dry_run" if args.dry_run else "production"
+    result_file = args.result_file
+    idempotency_key = args.idempotency_key.strip()
+    project_id_for_log = args.project_id.strip().lower() or "unknown"
+
+    log_event(
+        project_id=project_id_for_log,
+        step=STEP_NAME,
+        status="started",
+        mode=mode,
+        idempotency_key=idempotency_key,
+    )
+    try:
+        project_dir = Path(args.project_dir).expanduser().resolve()
+        if not project_dir.is_dir():
+            raise BriefInjectionError(f"--project-dir does not exist: {project_dir}")
+
+        loaded = _load_brief(args)
+        brief = _normalize_required_brief(loaded)
+        if args.project_id.strip() and brief["project_id"] != args.project_id.strip().lower():
+            raise BriefInjectionError(
+                f"Input project_id mismatch: expected '{args.project_id.strip().lower()}', "
+                f"brief contains '{brief['project_id']}'"
+            )
+        project_id_for_log = brief["project_id"]
+        idempotency_key = idempotency_key or str(loaded.get("idempotency_key", "")).strip()
+
+        brief_path = project_dir / "PRODUCT_BRIEF.md"
+        config_path = project_dir / "product.config.json"
+        product_brief = _render_product_brief(brief)
+        product_config = _render_product_config(brief)
+
+        if not args.dry_run:
+            atomic_write_text(brief_path, product_brief)
+            atomic_write_text(config_path, product_config)
+
+        result_payload = {
+            "project_id": brief["project_id"],
+            "step": STEP_NAME,
+            "status": "success",
+            "mode": mode,
+            "idempotency_key": idempotency_key,
+            "simulated": args.dry_run,
+            "files_written": [str(brief_path), str(config_path)],
+        }
+        maybe_write_result(result_file, result_payload)
+        log_event(
+            project_id=brief["project_id"],
+            step=STEP_NAME,
+            status="success",
+            mode=mode,
+            idempotency_key=idempotency_key,
+            simulated=args.dry_run,
+            files_written=[str(brief_path), str(config_path)],
+        )
+    except BriefInjectionError as exc:
+        error_message = str(exc)
+        maybe_write_result(
+            result_file,
+            {
+                "project_id": project_id_for_log,
+                "step": STEP_NAME,
+                "status": "failed",
+                "mode": mode,
+                "idempotency_key": idempotency_key,
+                "error": error_message,
+            },
+        )
+        log_event(
+            project_id=project_id_for_log,
+            step=STEP_NAME,
+            status="failed",
+            mode=mode,
+            idempotency_key=idempotency_key,
+            error=error_message,
+        )
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

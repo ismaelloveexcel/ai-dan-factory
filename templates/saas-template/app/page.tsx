@@ -1,94 +1,88 @@
-"use client";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import CtaForm from "./CtaForm";
 
-import { useState } from "react";
+type ProductBrief = {
+  productName: string;
+  problem: string;
+  solution: string;
+  cta: string;
+};
 
-export default function Home() {
-  const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+const FALLBACK_BRIEF: ProductBrief = {
+  productName: "Your Product",
+  problem: "Replace PRODUCT_BRIEF.md with a real customer pain point.",
+  solution: "Describe your focused solution in one clear paragraph.",
+  cta: "Get Started",
+};
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setStatus("loading");
-    try {
-      const res = await fetch("/api/lead", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      if (!res.ok) throw new Error("Request failed");
-      setStatus("success");
-      setEmail("");
-    } catch {
-      setStatus("error");
-    }
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractSection(markdown: string, sectionTitle: string): string {
+  const heading = escapeRegExp(sectionTitle);
+  const regex = new RegExp(`^##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|\\n#\\s+|$)`, "im");
+  const match = markdown.match(regex);
+  return match?.[1]?.trim() ?? "";
+}
+
+async function loadProductBrief(): Promise<ProductBrief> {
+  const briefPath = path.join(process.cwd(), "PRODUCT_BRIEF.md");
+  try {
+    const markdown = await readFile(briefPath, "utf-8");
+    return {
+      productName: extractSection(markdown, "Product Name") || FALLBACK_BRIEF.productName,
+      problem: extractSection(markdown, "Problem") || FALLBACK_BRIEF.problem,
+      solution: extractSection(markdown, "Solution") || FALLBACK_BRIEF.solution,
+      cta: extractSection(markdown, "CTA") || FALLBACK_BRIEF.cta,
+    };
+  } catch {
+    return FALLBACK_BRIEF;
   }
+}
+
+export default async function Home() {
+  const brief = await loadProductBrief();
 
   return (
     <main
       style={{
         minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "sans-serif",
-        background: "#f9fafb",
+        margin: 0,
+        display: "grid",
+        placeItems: "center",
         padding: "2rem",
+        background: "#f8fafc",
+        color: "#0f172a",
       }}
     >
-      {/* Hero */}
-      <section style={{ textAlign: "center", maxWidth: 640 }}>
-        <h1 style={{ fontSize: "3rem", fontWeight: 800, color: "#111827", margin: 0 }}>
-          {"{{PRODUCT_NAME}}"}
-        </h1>
-        <p style={{ fontSize: "1.25rem", color: "#6b7280", margin: "1rem 0 2rem" }}>
-          {"{{PRODUCT_TAGLINE}}"}
+      <section
+        style={{
+          width: "100%",
+          maxWidth: 760,
+          background: "#ffffff",
+          border: "1px solid #e2e8f0",
+          borderRadius: 20,
+          padding: "2.5rem 2rem",
+          boxShadow: "0 16px 40px rgba(15, 23, 42, 0.06)",
+        }}
+      >
+        <p style={{ margin: 0, fontSize: "0.85rem", letterSpacing: "0.04em", color: "#475569" }}>
+          PRODUCT BRIEF
         </p>
+        <h1 style={{ margin: "0.75rem 0 1rem", fontSize: "2.25rem", lineHeight: 1.1 }}>{brief.productName}</h1>
 
-        {/* CTA */}
-        <form onSubmit={handleSubmit} style={{ display: "flex", gap: "0.5rem", justifyContent: "center", flexWrap: "wrap" }}>
-          <input
-            type="email"
-            required
-            placeholder="Enter your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={{
-              padding: "0.75rem 1rem",
-              borderRadius: "0.5rem",
-              border: "1px solid #d1d5db",
-              fontSize: "1rem",
-              minWidth: 260,
-            }}
-          />
-          <button
-            type="submit"
-            disabled={status === "loading"}
-            style={{
-              padding: "0.75rem 1.5rem",
-              borderRadius: "0.5rem",
-              background: "#2563eb",
-              color: "#fff",
-              fontWeight: 700,
-              fontSize: "1rem",
-              border: "none",
-              cursor: status === "loading" ? "not-allowed" : "pointer",
-            }}
-          >
-            {status === "loading" ? "Sending…" : "Get Early Access"}
-          </button>
-        </form>
+        <div style={{ display: "grid", gap: "1rem", marginBottom: "1.75rem" }}>
+          <p style={{ margin: 0, color: "#334155" }}>
+            <strong>Problem:</strong> {brief.problem}
+          </p>
+          <p style={{ margin: 0, color: "#334155" }}>
+            <strong>Solution:</strong> {brief.solution}
+          </p>
+        </div>
 
-        {status === "success" && (
-          <p style={{ marginTop: "1rem", color: "#16a34a" }}>
-            🎉 You&apos;re on the list! We&apos;ll be in touch soon.
-          </p>
-        )}
-        {status === "error" && (
-          <p style={{ marginTop: "1rem", color: "#dc2626" }}>
-            Something went wrong. Please try again.
-          </p>
-        )}
+        <CtaForm cta={brief.cta} />
       </section>
     </main>
   );

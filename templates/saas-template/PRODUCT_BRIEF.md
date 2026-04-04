@@ -1,25 +1,13 @@
-# PRODUCT_BRIEF
-
-> This file is injected automatically by `inject_brief.py`.
-> Replace the placeholders below with real content before deploying.
+# Product Brief
 
 ## Product Name
-{{PRODUCT_NAME}}
-
-## Tagline
-{{PRODUCT_TAGLINE}}
+Replace with product name
 
 ## Problem
-{{PROBLEM}}
+Replace with the core problem
 
 ## Solution
-{{SOLUTION}}
+Replace with your solution
 
-## Target Audience
-{{TARGET_AUDIENCE}}
-
-## Key Features
-{{KEY_FEATURES}}
-
-## Pricing
-{{PRICING}}
+## CTA
+Get Started

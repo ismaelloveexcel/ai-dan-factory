@@ -1,95 +1,667 @@
-name: Factory Build
+name: factory-build
 
 on:
   workflow_dispatch:
     inputs:
       project_id:
-        description: "Unique project / repo slug (e.g. acme-saas)"
+        description: "GitHub repository slug for the generated project"
         required: true
         type: string
       build_brief_json:
-        description: "BuildBrief as a JSON string"
-        required: true
+        description: "BuildBrief JSON payload (required unless run_automated_tests_only=true)"
+        required: false
+        default: ""
         type: string
       dry_run:
-        description: "Dry run – skip GitHub repo creation and Vercel deploy"
+        description: "Simulate execution without side effects"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_automated_tests_only:
+        description: "Run automated factory tests only (no live create/deploy)"
         required: false
         default: "false"
         type: choice
         options:
-          - "true"
           - "false"
+          - "true"
+      test_mode:
+        description: "DEPRECATED alias for run_automated_tests_only"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      traffic_signal:
+        description: "Monitoring signal LOW/MEDIUM/HIGH"
+        required: false
+        default: "LOW"
+        type: choice
+        options:
+          - "LOW"
+          - "MEDIUM"
+          - "HIGH"
+      activation_metric:
+        description: "Activation signal LOW/MEDIUM/HIGH"
+        required: false
+        default: "LOW"
+        type: choice
+        options:
+          - "LOW"
+          - "MEDIUM"
+          - "HIGH"
+      revenue_signal_status:
+        description: "Revenue signal NONE/WEAK/STRONG"
+        required: false
+        default: "NONE"
+        type: choice
+        options:
+          - "NONE"
+          - "WEAK"
+          - "STRONG"
 
 jobs:
   build:
-    name: Generate & Deploy SaaS Product
+    concurrency:
+      group: factory-build-${{ github.ref }}-${{ inputs.project_id || 'unknown' }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      factory_response: ${{ steps.finalize.outputs.factory_response }}
+    env:
+      TEMPLATE_PROJECT_DIR: templates/saas-template
+      RESULT_ARTIFACT_NAME: factory-result-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
-      # ── 1. Checkout factory repository ────────────────────────────────────
-      - name: Checkout
+      - name: 1) Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ───────────────────────────────────────────────────
-      - name: Set up Python
+      - name: 2) Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ── 3. Create GitHub repository from template ─────────────────────────
-      - name: Create project repository
+      - name: 3) Initialize run context
+        env:
+          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          BRIEF_FILE="$(mktemp "$RUNNER_TEMP/build-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          NORMALIZED_BRIEF_FILE="$(mktemp "$RUNNER_TEMP/normalized-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          NORMALIZED_INPUTS_FILE="$(mktemp "$RUNNER_TEMP/normalized-inputs-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          TESTS_ONLY_LOG_FILE="$RESULT_DIR/tests_only.log"
+          STATE_DB="data/lifecycle.sqlite"
+          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
+
+          echo "::add-mask::$FACTORY_GITHUB_TOKEN"
+          echo "::add-mask::$VERCEL_DEPLOY_HOOK_URL"
+
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+          echo "BRIEF_FILE=$BRIEF_FILE" >> "$GITHUB_ENV"
+          echo "NORMALIZED_BRIEF_FILE=$NORMALIZED_BRIEF_FILE" >> "$GITHUB_ENV"
+          echo "NORMALIZED_INPUTS_FILE=$NORMALIZED_INPUTS_FILE" >> "$GITHUB_ENV"
+          echo "TESTS_ONLY_LOG_FILE=$TESTS_ONLY_LOG_FILE" >> "$GITHUB_ENV"
+          echo "STATE_DB=$STATE_DB" >> "$GITHUB_ENV"
+          echo "WORKFLOW_URL=$WORKFLOW_URL" >> "$GITHUB_ENV"
+          echo "TIMESTAMP_UTC=$TIMESTAMP_UTC" >> "$GITHUB_ENV"
+          echo "RUN_ID=${{ github.run_id }}" >> "$GITHUB_ENV"
+          echo "RUN_ATTEMPT=${{ github.run_attempt }}" >> "$GITHUB_ENV"
+
+      - name: 4) Normalize and validate input contract
+        env:
+          RAW_PROJECT_ID: ${{ inputs.project_id }}
+          RAW_BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          RAW_DRY_RUN: ${{ inputs.dry_run }}
+          RAW_RUN_AUTOMATED_TESTS_ONLY: ${{ inputs.run_automated_tests_only }}
+          RAW_TEST_MODE: ${{ inputs.test_mode }}
+        run: |
+          set -euo pipefail
+          python scripts/normalize_workflow_inputs.py \
+            --project-id "$RAW_PROJECT_ID" \
+            --build-brief-json "$RAW_BUILD_BRIEF_JSON" \
+            --dry-run "$RAW_DRY_RUN" \
+            --run-automated-tests-only "$RAW_RUN_AUTOMATED_TESTS_ONLY" \
+            --test-mode "$RAW_TEST_MODE" \
+            --normalized-output "$NORMALIZED_INPUTS_FILE" \
+            --result-file "$RESULT_DIR/normalize_inputs.json"
+
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path(os.environ["NORMALIZED_INPUTS_FILE"]).read_text(encoding="utf-8"))
+
+          def as_bool(v: object) -> str:
+              return "true" if bool(v) else "false"
+
+          print(f"PROJECT_ID_INPUT={data['project_id']}")
+          print(f"RUN_MODE={data['run_mode']}")
+          print(f"EFFECTIVE_DRY_RUN={as_bool(data.get('dry_run_effective'))}")
+          print(f"RUN_AUTOMATED_TESTS_ONLY_EFFECTIVE={as_bool(data.get('run_automated_tests_only_effective'))}")
+          print(f"DEPRECATED_TEST_MODE_REQUESTED={as_bool(data.get('deprecated_test_mode_requested'))}")
+          PY
+
+          if [ "${DEPRECATED_TEST_MODE_REQUESTED}" = "true" ]; then
+            echo "::warning::Input 'test_mode' is deprecated. Use 'run_automated_tests_only' instead."
+          fi
+
+      - name: 5) Run automated tests only
+        if: env.RUN_MODE == 'tests_only'
+        run: |
+          set -euo pipefail
+          set +e
+          python scripts/run_factory_tests.py > "$TESTS_ONLY_LOG_FILE" 2>&1
+          TEST_EXIT=$?
+          set -e
+
+          STEP_STATUS="success"
+          STEP_ERROR=""
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            STEP_STATUS="failed"
+            STEP_ERROR="Automated test suite failed. See tests_only.log in result artifact."
+          fi
+
+          TEST_EXIT="$TEST_EXIT" STEP_STATUS="$STEP_STATUS" STEP_ERROR="$STEP_ERROR" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "project_id": os.environ.get("PROJECT_ID_INPUT", "unknown"),
+              "step": "automated_tests_only",
+              "status": os.environ["STEP_STATUS"],
+              "mode": "tests_only",
+              "error": os.environ["STEP_ERROR"],
+          }
+          if not payload["error"]:
+              payload.pop("error")
+          p = Path(os.environ["RESULT_DIR"]) / "automated_tests_only.json"
+          p.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+          PY
+
+          cat "$TESTS_ONLY_LOG_FILE"
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            exit "$TEST_EXIT"
+          fi
+
+      - name: 6) Initialize lifecycle state (idea)
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          python scripts/lifecycle_orchestrator.py \
+            --state-db "$STATE_DB" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --to-state idea \
+            --reason "Initialized lifecycle state" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
+            > "$RESULT_DIR/lifecycle_idea.json"
+
+      - name: 7) Validate BuildBrief contract
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/validate_brief.py \
+            --brief-file "$BRIEF_FILE" \
+            --expected-project-id "$PROJECT_ID_INPUT" \
+            --normalized-output "$NORMALIZED_BRIEF_FILE" \
+            --result-file "$RESULT_DIR/validate_brief.json" \
+            $DRY_RUN_FLAG
+
+      - name: 8) Unified business gate
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          RUN_MODE_VALUE="$RUN_MODE"
+          BRIEF_SOURCE="$NORMALIZED_BRIEF_FILE"
+          if [ ! -s "$BRIEF_SOURCE" ]; then
+            BRIEF_SOURCE="$BRIEF_FILE"
+          fi
+          python scripts/validate_business_gate.py \
+            --brief-file "$BRIEF_SOURCE" \
+            --result-file "$RESULT_DIR/business_gate.json" \
+            --state-db "$STATE_DB" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-run-attempt "$RUN_ATTEMPT" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --run-mode "$RUN_MODE_VALUE"
+
+          DECISION="$(python - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ["RESULT_DIR"], "business_gate.json"), "r", encoding="utf-8") as f:
+              print(json.load(f)["decision"])
+          PY
+          )"
+          SCORE="$(python - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ["RESULT_DIR"], "business_gate.json"), "r", encoding="utf-8") as f:
+              print(json.load(f)["score"])
+          PY
+          )"
+          echo "BUSINESS_DECISION=$DECISION" >> "$GITHUB_ENV"
+          echo "BUSINESS_SCORE=$SCORE" >> "$GITHUB_ENV"
+          if [ "$DECISION" != "APPROVE" ]; then
+            echo "Business gate decision=$DECISION, score=$SCORE. Build/deploy blocked."
+            exit 1
+          fi
+
+      - name: 9) Move lifecycle to building
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          python scripts/lifecycle_orchestrator.py \
+            --state-db "$STATE_DB" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --to-state building \
+            --reason "Approved idea entered build stage" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --metadata-json "{\"score\":$BUSINESS_SCORE}" \
+            > "$RESULT_DIR/lifecycle_building.json"
+
+      - name: 10) Create project repository
+        if: env.RUN_MODE != 'tests_only'
+        env:
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          TEMPLATE_OWNER: ${{ github.repository_owner }}
+          TEMPLATE_REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          IDEMPOTENCY_KEY="$(python - <<'PY'
+import json, os
+brief_path = os.environ.get("NORMALIZED_BRIEF_FILE", "")
+if brief_path and os.path.isfile(brief_path):
+    with open(brief_path, "r", encoding="utf-8") as handle:
+        print(json.load(handle).get("idempotency_key", ""))
+else:
+    print("")
+PY
+          )"
+          echo "IDEMPOTENCY_KEY=$IDEMPOTENCY_KEY" >> "$GITHUB_ENV"
+
+          python scripts/create_project.py \
+            --project-id "$PROJECT_ID_INPUT" \
+            --org "${{ github.repository_owner }}" \
+            --idempotency-key "$IDEMPOTENCY_KEY" \
+            --result-file "$RESULT_DIR/create_repo.json" \
+            $DRY_RUN_FLAG
+
+      - name: 11) Inject BuildBrief into generated repository
+        if: env.RUN_MODE != 'tests_only'
         env:
           GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           DRY_RUN_FLAG=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
-          python scripts/create_project.py \
-            --project-id "${{ inputs.project_id }}" \
-            --org "${{ github.repository_owner }}" \
-            $DRY_RUN_FLAG
 
-      # ── 4. Copy template into workspace ───────────────────────────────────
-      - name: Copy saas-template to project workspace
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            # Dry-run: inject into factory template dir to simulate the operation
+            python scripts/inject_brief.py \
+              --project-id "$PROJECT_ID_INPUT" \
+              --project-dir "$TEMPLATE_PROJECT_DIR" \
+              --brief-file "$NORMALIZED_BRIEF_FILE" \
+              --idempotency-key "$IDEMPOTENCY_KEY" \
+              --result-file "$RESULT_DIR/inject_brief.json" \
+              --dry-run
+          else
+            # Production: clone the generated repo, inject brief, commit and push
+            REPO_URL="$(python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["RESULT_DIR"], "create_repo.json")
+          if os.path.isfile(p):
+              data = json.load(open(p, "r", encoding="utf-8"))
+              print(data.get("repo_url", ""))
+          else:
+              print("")
+          PY
+            )"
+
+            if [ -z "$REPO_URL" ]; then
+              echo "::warning::No repo_url found from create_repo step; skipping inject into generated repo."
+              python scripts/inject_brief.py \
+                --project-id "$PROJECT_ID_INPUT" \
+                --project-dir "$TEMPLATE_PROJECT_DIR" \
+                --brief-file "$NORMALIZED_BRIEF_FILE" \
+                --idempotency-key "$IDEMPOTENCY_KEY" \
+                --result-file "$RESULT_DIR/inject_brief.json"
+            else
+              GENERATED_REPO_DIR="$(mktemp -d "$RUNNER_TEMP/generated-repo-${{ github.run_id }}-XXXXXX")"
+              CLONE_URL="$(echo "$REPO_URL" | sed 's|https://|https://x-access-token:'"$GITHUB_TOKEN"'@|')"
+              git clone --depth=1 "$CLONE_URL" "$GENERATED_REPO_DIR"
+
+              python scripts/inject_brief.py \
+                --project-id "$PROJECT_ID_INPUT" \
+                --project-dir "$GENERATED_REPO_DIR" \
+                --brief-file "$NORMALIZED_BRIEF_FILE" \
+                --idempotency-key "$IDEMPOTENCY_KEY" \
+                --result-file "$RESULT_DIR/inject_brief.json"
+
+              git -C "$GENERATED_REPO_DIR" config user.email "factory-bot@users.noreply.github.com"
+              git -C "$GENERATED_REPO_DIR" config user.name "Factory Bot"
+              git -C "$GENERATED_REPO_DIR" add PRODUCT_BRIEF.md product.config.json
+              if ! git -C "$GENERATED_REPO_DIR" diff --cached --quiet; then
+                git -C "$GENERATED_REPO_DIR" commit -m "chore: inject product brief for $PROJECT_ID_INPUT"
+                git -C "$GENERATED_REPO_DIR" push
+              fi
+            fi
+          fi
+
+      - name: 12) Generate business output
+        if: env.RUN_MODE != 'tests_only'
         run: |
-          PROJECT_DIR="${{ runner.temp }}/project-${{ github.run_id }}"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          cp -r templates/saas-template "$PROJECT_DIR"
+          set -euo pipefail
+          python scripts/business_output_engine.py \
+            --brief-file "$NORMALIZED_BRIEF_FILE" \
+            --output-file "$RESULT_DIR/business_output.json" \
+            --result-file "$RESULT_DIR/business_output_result.json"
 
-      # ── 5. Inject BuildBrief into template files ──────────────────────────
-      - name: Inject BuildBrief
+      - name: 13) Trigger deployment
+        if: env.RUN_MODE != 'tests_only'
         env:
-          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
+          set -euo pipefail
           DRY_RUN_FLAG=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
-          BRIEF_FILE="${{ runner.temp }}/brief-${{ github.run_id }}.json"
-          printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
-          python scripts/inject_brief.py \
-            --project-dir "$PROJECT_DIR" \
-            --brief-file "$BRIEF_FILE" \
-            $DRY_RUN_FLAG
 
-      # ── 6. Install Vercel CLI ──────────────────────────────────────────────
-      - name: Install Vercel CLI
-        run: npm install -g vercel
-
-      # ── 7. Deploy to Vercel ────────────────────────────────────────────────
-      - name: Deploy to Vercel
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-        run: |
-          DRY_RUN_FLAG=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
           python scripts/deploy.py \
-            --project-dir "$PROJECT_DIR" \
-            --project-id "${{ inputs.project_id }}" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --idempotency-key "$IDEMPOTENCY_KEY" \
+            --result-file "$RESULT_DIR/deploy.json" \
             $DRY_RUN_FLAG
+
+      - name: 14) Deployment health check
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          DEPLOYMENT_URL="$(python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["RESULT_DIR"], "deploy.json")
+          if not os.path.isfile(p):
+              print("")
+          else:
+              with open(p, "r", encoding="utf-8") as f:
+                  print(json.load(f).get("deployment_url", ""))
+          PY
+          )"
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/deploy_health_check.py \
+            --project-id "$PROJECT_ID_INPUT" \
+            --deployment-url "$DEPLOYMENT_URL" \
+            --result-file "$RESULT_DIR/deploy_health.json" \
+            $DRY_RUN_FLAG
+
+      - name: 15) Move lifecycle to deployed
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          python scripts/lifecycle_orchestrator.py \
+            --state-db "$STATE_DB" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --to-state deployed \
+            --reason "Build completed and deployment triggered" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
+            > "$RESULT_DIR/lifecycle_deployed.json"
+
+      - name: 16) Move lifecycle to monitored
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          python scripts/lifecycle_orchestrator.py \
+            --state-db "$STATE_DB" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --to-state monitored \
+            --reason "Deployment entered monitoring stage" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
+            > "$RESULT_DIR/lifecycle_monitored.json"
+
+      - name: 17) Monitor and decide scale/kill
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          python scripts/monitor_and_decide.py \
+            --state-db "$STATE_DB" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --traffic-signal "${{ inputs.traffic_signal }}" \
+            --activation-metric "${{ inputs.activation_metric }}" \
+            --revenue-signal-status "${{ inputs.revenue_signal_status }}" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --result-file "$RESULT_DIR/monitoring_decision.json"
+
+      - name: 18) Portfolio simplified summary
+        if: always()
+        run: |
+          set -euo pipefail
+          python scripts/portfolio_summary.py \
+            --state-db "$STATE_DB" \
+            --result-file "$RESULT_DIR/portfolio_summary.json"
+
+      - name: 19) Finalize factory response
+        if: always()
+        id: finalize
+        env:
+          PROJECT_ID_INPUT: ${{ env.PROJECT_ID_INPUT }}
+          RAW_PROJECT_ID: ${{ inputs.project_id }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+          RUN_MODE: ${{ env.RUN_MODE }}
+          JOB_STATUS: ${{ job.status }}
+          RESULT_ARTIFACT_NAME: ${{ env.RESULT_ARTIFACT_NAME }}
+          RUN_ID: ${{ env.RUN_ID }}
+          RUN_ATTEMPT: ${{ env.RUN_ATTEMPT }}
+          WORKFLOW_URL: ${{ env.WORKFLOW_URL }}
+          TIMESTAMP_UTC: ${{ env.TIMESTAMP_UTC }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          fi
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+
+          RESPONSE_FILE="$RESULT_DIR/factory-response.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          project_id = os.environ.get("PROJECT_ID_INPUT") or os.environ.get("RAW_PROJECT_ID", "unknown")
+          run_mode = os.environ.get("RUN_MODE", "unknown")
+          result_dir = Path(os.environ["RESULT_DIR"])
+          result_dir.mkdir(parents=True, exist_ok=True)
+
+          step_files = [
+              ("normalize_inputs", result_dir / "normalize_inputs.json"),
+              ("automated_tests_only", result_dir / "automated_tests_only.json"),
+              ("validate_brief", result_dir / "validate_brief.json"),
+              ("business_gate", result_dir / "business_gate.json"),
+              ("create_repo", result_dir / "create_repo.json"),
+              ("inject_brief", result_dir / "inject_brief.json"),
+              ("business_output", result_dir / "business_output_result.json"),
+              ("deploy", result_dir / "deploy.json"),
+              ("deploy_health", result_dir / "deploy_health.json"),
+              ("monitoring_decision", result_dir / "monitoring_decision.json"),
+          ]
+
+          steps = []
+          overall_status = "failed" if os.environ.get("JOB_STATUS") == "failure" else "success"
+          repo_url = ""
+          deployment_status = "not_applicable" if run_mode == "tests_only" else "not_started"
+          deployment_url = ""
+          idempotency_key = ""
+          failure_reason = ""
+          errors = []
+          kill_candidate = False
+          optimize_candidate = False
+          scale_candidate = False
+
+          for step_name, step_path in step_files:
+              if step_path.exists():
+                  data = json.loads(step_path.read_text(encoding="utf-8"))
+              else:
+                  data = {
+                      "project_id": project_id,
+                      "step": step_name,
+                      "status": "skipped",
+                      "mode": run_mode if run_mode else "unknown",
+                  }
+              steps.append(data)
+              if data.get("status") == "failed":
+                  overall_status = "failed"
+                  err = str(data.get("error", "")).strip() or str(data.get("reason", "")).strip()
+                  if err:
+                      errors.append(f"{step_name}: {err}")
+              if not idempotency_key:
+                  candidate = str(data.get("idempotency_key", "")).strip()
+                  if candidate:
+                      idempotency_key = candidate
+              if step_name == "create_repo":
+                  repo_url = str(data.get("repo_url", repo_url))
+              if step_name == "deploy":
+                  deployment_status = str(data.get("deployment_status", data.get("status", deployment_status)))
+                  deployment_url = str(data.get("deployment_url", deployment_url))
+              if step_name == "business_gate" and data.get("decision") != "APPROVE":
+                  failure_reason = str(data.get("reason", "")).strip() or "Business gate decision was not APPROVE."
+              if step_name == "monitoring_decision":
+                  kill_candidate = bool(data.get("kill_candidate", False))
+                  optimize_candidate = bool(data.get("optimize_candidate", False))
+                  scale_candidate = bool(data.get("scale_candidate", False))
+
+          error_summary = "; ".join(errors) if errors else ""
+          if overall_status == "failed" and not failure_reason:
+              failure_reason = error_summary or "Workflow failed before detailed reason was captured."
+
+          response = {
+              "project_id": project_id,
+              "run_id": os.environ.get("RUN_ID", ""),
+              "run_attempt": os.environ.get("RUN_ATTEMPT", ""),
+              "workflow_url": os.environ.get("WORKFLOW_URL", ""),
+              "timestamp_utc": os.environ.get("TIMESTAMP_UTC", ""),
+              "repo_url": repo_url,
+              "deployment_url": deployment_url,
+              "status": overall_status,
+              "run_mode": run_mode,
+              "idempotency_key": idempotency_key,
+              "steps": steps,
+              "deployment": {
+                  "status": deployment_status,
+                  "url": deployment_url,
+              },
+              "error_summary": error_summary,
+              "failure_reason": failure_reason,
+              "kill_candidate": kill_candidate,
+              "optimize_candidate": optimize_candidate,
+              "scale_candidate": scale_candidate,
+              "result_artifact": {
+                  "name": os.environ.get("RESULT_ARTIFACT_NAME", ""),
+                  "path": "factory-response.json",
+              },
+          }
+          response_file = result_dir / "factory-response.json"
+          response_file.write_text(json.dumps(response, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+          print(json.dumps(response, ensure_ascii=True))
+          PY
+
+          echo "factory_response<<EOF" >> "$GITHUB_OUTPUT"
+          cat "$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          response_file = Path(os.environ["RESULT_DIR"]) / "factory-response.json"
+          response = json.loads(response_file.read_text(encoding="utf-8"))
+          lines = [
+              f"RUN MODE: {str(response.get('run_mode', 'unknown')).upper()}",
+              f"RUN STATUS: {str(response.get('status', 'failed')).upper()}",
+              f"PROJECT ID: {response.get('project_id', 'unknown')}",
+              f"RUN ID: {response.get('run_id', '')}",
+              f"RUN ATTEMPT: {response.get('run_attempt', '')}",
+              f"WORKFLOW URL: {response.get('workflow_url', '')}",
+              f"REPO: {response.get('repo_url', 'not-created')}",
+              f"DEPLOYMENT: {response.get('deployment_url', 'not-available')}",
+              f"IDEMPOTENCY KEY: {response.get('idempotency_key', 'not-available')}",
+              f"ERROR SUMMARY: {response.get('error_summary', 'none') or 'none'}",
+              f"FAILURE REASON: {response.get('failure_reason', 'none') or 'none'}",
+              f"KILL CANDIDATE: {response.get('kill_candidate', False)}",
+              f"OPTIMIZE CANDIDATE: {response.get('optimize_candidate', False)}",
+              f"SCALE CANDIDATE: {response.get('scale_candidate', False)}",
+          ]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("## Factory Execution Summary\n\n")
+              for line in lines:
+                  handle.write(f"- {line}\n")
+          print("\n".join(lines))
+          PY
+
+      - name: 20) Emit alert payload on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          python scripts/emit_alert.py \
+            --project-id "${PROJECT_ID_INPUT:-${{ inputs.project_id }}}" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --workflow-url "$WORKFLOW_URL" \
+            --failure-reason "factory-build failed" \
+            --error-summary "Check factory-response.json and step logs for details" \
+            --result-file "$RESULT_DIR/alert_payload.json"
+
+      - name: 21) Upload result artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RESULT_ARTIFACT_NAME }}
+          if-no-files-found: warn
+          path: |
+            ${{ env.RESULT_DIR }}/factory-response.json
+            ${{ env.RESULT_DIR }}/*.json
+            ${{ env.RESULT_DIR }}/*.log
+            data/lifecycle.sqlite

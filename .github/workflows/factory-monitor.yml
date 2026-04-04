@@ -1,0 +1,54 @@
+name: factory-monitor
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      max_items_per_category:
+        description: "Maximum projects per IGNORE/WATCH/SCALE category"
+        required: false
+        default: "5"
+        type: string
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run monitor and decision engine
+        run: |
+          set -euo pipefail
+          RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-monitor-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          STATE_DB="data/lifecycle.sqlite"
+          SIGNALS_OUT="$RESULT_DIR/monitoring_decisions.json"
+          SUMMARY_OUT="$RESULT_DIR/portfolio_summary.json"
+
+          MAX_ITEMS_PER_CATEGORY="${{ github.event.inputs.max_items_per_category }}"
+          MAX_ITEMS_PER_CATEGORY="${MAX_ITEMS_PER_CATEGORY:-5}"
+
+          python scripts/portfolio_summary.py \
+            --state-db "$STATE_DB" \
+            --result-file "$SUMMARY_OUT" \
+            --max-items-per-category "$MAX_ITEMS_PER_CATEGORY"
+
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+
+      - name: Upload monitor artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ env.RESULT_DIR }}/*.json

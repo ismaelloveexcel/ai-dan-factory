@@ -1,0 +1,38 @@
+[
+  {
+    "project_id": "autonomous-trend-001",
+    "product_name": "Trend Brief Analyzer",
+    "problem": "Teams struggle to translate trend spikes into monetizable landing pages quickly.",
+    "solution": "Automatically generate a focused landing page and offer from trend-backed brief inputs.",
+    "cta": "Get trend report",
+    "source_type": "TREND",
+    "reference_context": "Search trend proxies show repeated growth in AI onboarding checklist demand.",
+    "demand_level": "HIGH",
+    "monetization_proof": "YES",
+    "market_saturation": "MEDIUM",
+    "differentiation": "STRONG",
+    "build_complexity": "MEDIUM",
+    "speed_to_revenue": "FAST",
+    "monetization_model": "subscription",
+    "pricing_suggestion": "$29/month starter",
+    "offer_structure": "Free score preview + paid detailed report"
+  },
+  {
+    "project_id": "autonomous-gap-001",
+    "product_name": "Niche Launch Concierge",
+    "problem": "Operators need a simple way to launch niche SaaS concepts without technical setup.",
+    "solution": "Factory-generated template app with prewritten positioning and lightweight GTM plan.",
+    "cta": "Launch now",
+    "source_type": "GAP",
+    "reference_context": "Competitor products focus enterprise segments and ignore solo operator workflows.",
+    "demand_level": "MEDIUM",
+    "monetization_proof": "YES",
+    "market_saturation": "LOW",
+    "differentiation": "STRONG",
+    "build_complexity": "LOW",
+    "speed_to_revenue": "FAST",
+    "monetization_model": "one-time",
+    "pricing_suggestion": "$199 launch pack",
+    "offer_structure": "Single payment + optional upsell playbook"
+  }
+]
