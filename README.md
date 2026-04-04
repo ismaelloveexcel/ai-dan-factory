@@ -181,6 +181,12 @@ CI automation:
   - pushes to `main`
   - pull requests targeting `main`
   - manual trigger (`workflow_dispatch`)
+- Runs are concurrency-cancelled per branch/PR to avoid duplicate compute.
+
+Recommended merge efficiency setting (GitHub UI):
+- Branch protection for `main` should require status check:
+  - `factory-ci / test`
+- This prevents manual review churn on unverified changes.
 
 ## First Live Run
 
@@ -217,3 +223,17 @@ What to check first on failure:
 4. Final `factory_response` JSON in the **Finalize factory response** step.
 
 See the operator checklist: [docs/live_run_checklist.md](docs/live_run_checklist.md)
+
+## Fast workflow testing in Actions
+
+To run checks without triggering repo creation/deployment:
+
+1. Open **Actions** → **factory-build**.
+2. Click **Run workflow**.
+3. Set:
+   - `test_mode=true`
+   - `dry_run=true`
+   - leave `build_brief_json` empty
+   - `project_id` can stay `test-001`
+
+This executes the full validation/injection/deploy path in safe simulated mode.

@@ -31,6 +31,9 @@ on:
 
 jobs:
   build:
+    concurrency:
+      group: factory-build-${{ github.ref }}-${{ inputs.project_id || 'test-001' }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
