@@ -78,12 +78,13 @@ export default function FeedbackWidget({ projectId }: { projectId: string }) {
             disabled={status === "submitting"}
             onClick={() => handleFeedback(opt.type)}
             style={{
-              border: "1px solid #cbd5e1",
+              border: selected === opt.type ? "2px solid #0f172a" : "1px solid #cbd5e1",
               borderRadius: 8,
               background: selected === opt.type ? "#e2e8f0" : "#f8fafc",
               color: "#475569",
               padding: "0.4rem 0.75rem",
               fontSize: "0.8rem",
+              fontWeight: selected === opt.type ? 700 : 400,
               cursor: status === "submitting" ? "not-allowed" : "pointer",
               opacity: status === "submitting" && selected !== opt.type ? 0.5 : 1,
             }}

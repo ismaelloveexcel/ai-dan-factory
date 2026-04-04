@@ -44,7 +44,10 @@ def _load_business_output(path: Path) -> dict[str, Any]:
 
 
 def extract_primary_price(pricing_suggestion: str) -> float:
-    """Extract the first dollar amount from a pricing suggestion string."""
+    """Extract the first USD dollar amount from a pricing suggestion string.
+
+    Only supports USD ($) pricing format (e.g. "$19/month", "$29 one-time").
+    """
     match = re.search(r"\$(\d+(?:\.\d{1,2})?)", pricing_suggestion)
     if match:
         return float(match.group(1))
