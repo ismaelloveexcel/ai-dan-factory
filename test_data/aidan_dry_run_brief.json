@@ -3,5 +3,13 @@
   "product_name": "AI-DAN Dry Run Product",
   "problem": "Operators need deterministic dry-run validation before allowing live factory execution.",
   "solution": "A minimal product brief that verifies the end-to-end factory contract without external side effects.",
-  "cta": "Run simulation"
+  "cta": "Run simulation",
+  "source_type": "TREND",
+  "reference_context": "AI workflow automation products with repeat founder pain around launch readiness checks.",
+  "demand_level": "HIGH",
+  "monetization_proof": "YES",
+  "market_saturation": "MEDIUM",
+  "differentiation": "STRONG",
+  "build_complexity": "LOW",
+  "speed_to_revenue": "FAST"
 }

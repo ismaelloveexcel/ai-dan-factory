@@ -3,5 +3,20 @@
   "product_name": "Test Product",
   "problem": "Users need a simple way to validate the AI-DAN factory live pipeline.",
   "solution": "A minimal placeholder product used only to test live repo creation and deployment.",
-  "cta": "Join waitlist"
+  "cta": "Join waitlist",
+  "source_type": "TREND",
+  "reference_context": "Rising demand for lightweight automated product launch workflows across indie builders.",
+  "demand_level": "HIGH",
+  "monetization_proof": "YES",
+  "market_saturation": "MEDIUM",
+  "differentiation": "STRONG",
+  "build_complexity": "MEDIUM",
+  "speed_to_revenue": "FAST",
+  "monetization_model": "subscription",
+  "pricing_suggestion": "$29/month starter plan",
+  "offer_structure": "Core automation with optional concierge upsell",
+  "gtm_primary_channel": "SEO",
+  "gtm_secondary_channel": "X",
+  "original_reference": "",
+  "improvement_strategy": "Improve onboarding clarity and niche positioning for operators"
 }

@@ -3,5 +3,13 @@
   "product_name": "AI-DAN Live Integration Product",
   "problem": "AI-DAN needs a reliable first-party way to launch and track factory builds from workflow triggers.",
   "solution": "A production-safe placeholder brief used to confirm repo creation, brief injection, and deployment trigger behavior.",
-  "cta": "Join waitlist"
+  "cta": "Join waitlist",
+  "source_type": "EXISTING_PRODUCT",
+  "reference_context": "Reference a successful comparable workflow automation product with paying users.",
+  "demand_level": "HIGH",
+  "monetization_proof": "YES",
+  "market_saturation": "MEDIUM",
+  "differentiation": "STRONG",
+  "build_complexity": "MEDIUM",
+  "speed_to_revenue": "FAST"
 }
