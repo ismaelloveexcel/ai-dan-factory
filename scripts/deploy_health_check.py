@@ -55,13 +55,14 @@ def main() -> None:
     )
 
     if args.skip_check or args.dry_run:
+        health_status = "simulated" if args.dry_run else "skipped"
         payload = {
             "project_id": project_id,
             "step": STEP_NAME,
             "status": "success",
             "mode": mode,
             "idempotency_key": idempotency_key,
-            "health_status": "simulated" if args.dry_run else "skipped",
+            "health_status": health_status,
             "failure_reason": "",
             "error_summary": "",
         }
@@ -72,7 +73,7 @@ def main() -> None:
             status="success",
             mode=mode,
             idempotency_key=idempotency_key,
-            health_status="skipped",
+            health_status=health_status,
         )
         return
 

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import CtaForm from "./CtaForm";
 
 type ProductBrief = {
   productName: string;
@@ -81,24 +82,7 @@ export default async function Home() {
           </p>
         </div>
 
-        <form action="/api/lead" method="post">
-          <input type="hidden" name="source" value="hero-cta" />
-          <button
-            type="submit"
-            style={{
-              border: "none",
-              borderRadius: 12,
-              background: "#0f172a",
-              color: "#f8fafc",
-              padding: "0.85rem 1.2rem",
-              fontSize: "1rem",
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            {brief.cta}
-          </button>
-        </form>
+        <CtaForm cta={brief.cta} />
       </section>
     </main>
   );

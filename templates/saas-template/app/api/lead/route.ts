@@ -27,7 +27,10 @@ async function readPayload(request: NextRequest): Promise<{ email?: string; sour
 export async function POST(req: NextRequest) {
   try {
     const payload = await readPayload(req);
-    if (payload.email && !EMAIL_REGEX.test(payload.email)) {
+    if (!payload.email) {
+      return NextResponse.json({ error: "email is required" }, { status: 400 });
+    }
+    if (!EMAIL_REGEX.test(payload.email)) {
       return NextResponse.json({ error: "Invalid email format" }, { status: 400 });
     }
 

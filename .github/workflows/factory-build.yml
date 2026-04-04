@@ -99,7 +99,7 @@ jobs:
           NORMALIZED_BRIEF_FILE="$(mktemp "$RUNNER_TEMP/normalized-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
           NORMALIZED_INPUTS_FILE="$(mktemp "$RUNNER_TEMP/normalized-inputs-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
           TESTS_ONLY_LOG_FILE="$RESULT_DIR/tests_only.log"
-          STATE_DB="$RESULT_DIR/lifecycle.sqlite"
+          STATE_DB="data/lifecycle.sqlite"
           WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TIMESTAMP_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
@@ -314,8 +314,10 @@ PY
             --result-file "$RESULT_DIR/create_repo.json" \
             $DRY_RUN_FLAG
 
-      - name: 11) Inject BuildBrief into template
+      - name: 11) Inject BuildBrief into generated repository
         if: env.RUN_MODE != 'tests_only'
+        env:
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           DRY_RUN_FLAG=""
@@ -323,13 +325,57 @@ PY
             DRY_RUN_FLAG="--dry-run"
           fi
 
-          python scripts/inject_brief.py \
-            --project-id "$PROJECT_ID_INPUT" \
-            --project-dir "$TEMPLATE_PROJECT_DIR" \
-            --brief-file "$NORMALIZED_BRIEF_FILE" \
-            --idempotency-key "$IDEMPOTENCY_KEY" \
-            --result-file "$RESULT_DIR/inject_brief.json" \
-            $DRY_RUN_FLAG
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            # Dry-run: inject into factory template dir to simulate the operation
+            python scripts/inject_brief.py \
+              --project-id "$PROJECT_ID_INPUT" \
+              --project-dir "$TEMPLATE_PROJECT_DIR" \
+              --brief-file "$NORMALIZED_BRIEF_FILE" \
+              --idempotency-key "$IDEMPOTENCY_KEY" \
+              --result-file "$RESULT_DIR/inject_brief.json" \
+              --dry-run
+          else
+            # Production: clone the generated repo, inject brief, commit and push
+            REPO_URL="$(python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["RESULT_DIR"], "create_repo.json")
+          if os.path.isfile(p):
+              data = json.load(open(p, "r", encoding="utf-8"))
+              print(data.get("repo_url", ""))
+          else:
+              print("")
+          PY
+            )"
+
+            if [ -z "$REPO_URL" ]; then
+              echo "::warning::No repo_url found from create_repo step; skipping inject into generated repo."
+              python scripts/inject_brief.py \
+                --project-id "$PROJECT_ID_INPUT" \
+                --project-dir "$TEMPLATE_PROJECT_DIR" \
+                --brief-file "$NORMALIZED_BRIEF_FILE" \
+                --idempotency-key "$IDEMPOTENCY_KEY" \
+                --result-file "$RESULT_DIR/inject_brief.json"
+            else
+              GENERATED_REPO_DIR="$(mktemp -d "$RUNNER_TEMP/generated-repo-${{ github.run_id }}-XXXXXX")"
+              CLONE_URL="$(echo "$REPO_URL" | sed 's|https://|https://x-access-token:'"$GITHUB_TOKEN"'@|')"
+              git clone --depth=1 "$CLONE_URL" "$GENERATED_REPO_DIR"
+
+              python scripts/inject_brief.py \
+                --project-id "$PROJECT_ID_INPUT" \
+                --project-dir "$GENERATED_REPO_DIR" \
+                --brief-file "$NORMALIZED_BRIEF_FILE" \
+                --idempotency-key "$IDEMPOTENCY_KEY" \
+                --result-file "$RESULT_DIR/inject_brief.json"
+
+              git -C "$GENERATED_REPO_DIR" config user.email "factory-bot@github-actions"
+              git -C "$GENERATED_REPO_DIR" config user.name "Factory Bot"
+              git -C "$GENERATED_REPO_DIR" add PRODUCT_BRIEF.md product.config.json
+              if ! git -C "$GENERATED_REPO_DIR" diff --cached --quiet; then
+                git -C "$GENERATED_REPO_DIR" commit -m "chore: inject product brief for $PROJECT_ID_INPUT"
+                git -C "$GENERATED_REPO_DIR" push
+              fi
+            fi
+          fi
 
       - name: 12) Generate business output
         if: env.RUN_MODE != 'tests_only'
@@ -618,4 +664,4 @@ PY
             ${{ env.RESULT_DIR }}/factory-response.json
             ${{ env.RESULT_DIR }}/*.json
             ${{ env.RESULT_DIR }}/*.log
-            ${{ env.RESULT_DIR }}/lifecycle.sqlite
+            data/lifecycle.sqlite

@@ -157,7 +157,8 @@ Persistent state backend for lifecycle and monitoring:
 - manages lifecycle transitions in SQLite
 - stores run-level state and transition history
 - stores monitoring decision signals
-- database path default in this repo: `data/lifecycle.sqlite`
+- database path used across all workflows: `data/lifecycle.sqlite`
+- `factory-build` writes to `data/lifecycle.sqlite` and uploads it as a workflow artifact; `factory-monitor` reads from the same path after checkout
 
 ### `scripts/create_project.py`
 Creates a GitHub repo from a template repo using GitHub API with duplicate protection.

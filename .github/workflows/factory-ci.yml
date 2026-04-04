@@ -31,4 +31,4 @@ jobs:
       - name: Run factory automated tests
         run: |
           set -euo pipefail
-          python scripts/run_factory_tests.py --verbose
+          python scripts/run_factory_tests.py
