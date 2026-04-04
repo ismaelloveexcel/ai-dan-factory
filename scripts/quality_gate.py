@@ -8,8 +8,9 @@ Scores:
   - ux_simplicity (landing page completeness)
   - perceived_value (monetization signals)
   - first_impression (overall readiness)
+  - conversion_readiness (monetization + target user + distribution plan)
 
-Output: QUALITY_SCORE (0–10)
+Output: QUALITY_SCORE (0–12)
   <6 → BLOCK distribution
   6–7 → improve (warn)
   ≥8 → proceed
@@ -105,6 +106,23 @@ def _score_first_impression(
     return score
 
 
+def _score_conversion_readiness(
+    brief: dict[str, Any],
+    business_output: dict[str, Any] | None,
+) -> int:
+    """Score conversion readiness — monetization signals and target user clarity (0-2)."""
+    score = 0
+    if business_output:
+        has_target = bool(business_output.get("target_user"))
+        has_pricing = bool(business_output.get("pricing_hint") or business_output.get("pricing_suggestion"))
+        has_distribution = bool(business_output.get("distribution_plan"))
+        if has_target and has_pricing:
+            score += 1
+        if has_distribution:
+            score += 1
+    return score
+
+
 def evaluate_quality(
     brief: dict[str, Any],
     business_output: dict[str, Any] | None = None,
@@ -117,6 +135,7 @@ def evaluate_quality(
         "ux_simplicity": _score_ux_simplicity(brief, business_output),
         "perceived_value": _score_perceived_value(brief, business_output),
         "first_impression": _score_first_impression(brief, business_output, health_status),
+        "conversion_readiness": _score_conversion_readiness(brief, business_output),
     }
     total = sum(breakdown.values())
 
@@ -128,7 +147,7 @@ def evaluate_quality(
         reason = "Quality score 6-7 — improvements recommended before distribution."
     else:
         decision = "PROCEED"
-        reason = "Quality score 8-10 — ready for distribution."
+        reason = "Quality score 8+ — ready for distribution."
 
     return {
         "quality_score": total,

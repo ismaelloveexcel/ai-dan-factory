@@ -45,6 +45,28 @@ def _render_product_config(brief: dict[str, str]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=True) + "\n"
 
 
+def _merge_ai_copy_into_config(config_str: str, ai_copy_file: str) -> str:
+    """Merge AI-generated copy fields into product.config.json."""
+    if not ai_copy_file:
+        return config_str
+    ai_path = Path(ai_copy_file).expanduser().resolve()
+    if not ai_path.is_file():
+        return config_str
+    try:
+        ai_data = json.loads(ai_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return config_str
+
+    config = json.loads(config_str)
+    copy = ai_data.get("ai_copy", {})
+    if isinstance(copy, dict):
+        for key in ("headline", "subheading", "description", "cta_text",
+                     "short_pitch", "benefit_bullets"):
+            if key in copy and copy[key]:
+                config[key] = copy[key]
+    return json.dumps(config, indent=2, ensure_ascii=True) + "\n"
+
+
 def _load_brief(args: argparse.Namespace) -> dict[str, Any]:
     if args.brief_file:
         brief_path = Path(args.brief_file).expanduser().resolve()
@@ -83,6 +105,7 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--brief-json", help="BuildBrief JSON string")
     group.add_argument("--brief-file", help="Path to BuildBrief JSON file")
+    parser.add_argument("--ai-copy-file", default="", help="Path to AI copy result JSON (optional)")
     parser.add_argument("--idempotency-key", default="", help="Idempotency key for deduplication/audit")
     parser.add_argument("--result-file", default="", help="Path to write step result JSON")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without writing files")
@@ -119,6 +142,7 @@ def main() -> None:
         config_path = project_dir / "product.config.json"
         product_brief = _render_product_brief(brief)
         product_config = _render_product_config(brief)
+        product_config = _merge_ai_copy_into_config(product_config, args.ai_copy_file)
 
         if not args.dry_run:
             atomic_write_text(brief_path, product_brief)

@@ -8,11 +8,11 @@ The factory executes a strict pipeline:
 
 ```
 BuildBrief → Validate → Score → Approve → Economics → Control → Queue →
-Create Repo → Inject → Build → Deploy → Health Check → Quality Gate →
-Monitor → Distribute → Track → Learn
+Create Repo → AI Enhance → Inject → Build → Deploy → Health Check →
+Quality Gate → Monitor → Distribute → Track → Learn
 ```
 
-Every decision is deterministic and auditable. Steps with missing prerequisites (e.g. no business output) are gracefully skipped with warnings.
+Every decision is deterministic and auditable. AI enhancement via OpenAI generates high-quality marketing copy when `OPENAI_API_KEY` is available; otherwise, deterministic templates are used (marked as reduced quality).
 
 ## Architecture
 
@@ -27,25 +27,26 @@ Every decision is deterministic and auditable. Steps with missing prerequisites 
 │   ├── validate_brief.py              # Phase 1: BuildBrief validation + normalization
 │   ├── validate_business_gate.py      # Phase 2: Unified business gate (APPROVE/HOLD/REJECT)
 │   ├── scoring_engine.py              # Phase 2: Deterministic scoring (0-10)
-│   ├── build_economics.py             # Phase 8.5: ROI evaluation before build
-│   ├── build_control.py               # Phase 8: Rate limiting + queue priority
-│   ├── create_project.py              # Phase 3: GitHub repo creation from template
-│   ├── inject_brief.py                # Phase 4: Brief injection into product files
-│   ├── deploy.py                      # Phase 6: Vercel deployment trigger
-│   ├── deploy_health_check.py         # Phase 6.5: Post-deploy health verification
-│   ├── quality_gate.py                # Phase 6.65: Product quality scoring gate
-│   ├── business_output_engine.py      # Phase 11: Monetization payload generation
-│   ├── distribution_engine.py         # Phase 11.5: Distribution content + outreach
-│   ├── monitor_and_decide.py          # Phase 7/12: Signal evaluation + decisions
-│   ├── portfolio_summary.py           # Phase 7: Portfolio bucketing
-│   ├── lifecycle_orchestrator.py      # Phase 9: Strict state machine transitions
-│   ├── state_store.py                 # Phase 7: Persistent SQLite lifecycle store
-│   ├── idea_source_engine.py          # Phase 13: Autonomous idea selection
+│   ├── build_economics.py             # Phase 3: ROI evaluation before build
+│   ├── build_control.py               # Phase 4: Rate limiting + queue priority
+│   ├── create_project.py              # Phase 5: GitHub repo creation from template
+│   ├── ai_enhance.py                  # Phase 5.5: AI-generated marketing copy (OpenAI)
+│   ├── inject_brief.py                # Phase 6: Brief + AI copy injection into product files
+│   ├── deploy.py                      # Phase 7: Vercel deployment trigger
+│   ├── deploy_health_check.py         # Phase 7.5: Post-deploy health verification
+│   ├── quality_gate.py                # Phase 8: Product quality scoring gate (6 dimensions)
+│   ├── business_output_engine.py      # Phase 9: Monetization payload generation
+│   ├── distribution_engine.py         # Phase 10: Distribution content + outreach
+│   ├── monitor_and_decide.py          # Phase 11: Signal evaluation + decisions
+│   ├── portfolio_summary.py           # Phase 11.5: Portfolio bucketing
+│   ├── lifecycle_orchestrator.py      # Strict state machine transitions
+│   ├── state_store.py                 # Persistent SQLite lifecycle store
+│   ├── idea_source_engine.py          # Autonomous idea selection
 │   ├── factory_utils.py               # Shared utilities
 │   ├── normalize_workflow_inputs.py   # Workflow input normalization
 │   ├── emit_alert.py                  # Failure alert payloads
 │   └── run_factory_tests.py           # 9-stage automated test suite
-├── templates/saas-template/           # Next.js 14 landing page template
+├── templates/saas-template/           # Next.js 14 conversion-optimized landing page
 ├── test_data/                         # Test payloads and autonomous ideas
 ├── data/lifecycle.sqlite              # Persistent lifecycle database
 ├── docs/                              # Integration contracts and checklists
@@ -62,6 +63,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
 |----------|----------|-------------|
 | `FACTORY_GITHUB_TOKEN` | Yes | PAT with `repo` scope for creating repositories |
 | `VERCEL_DEPLOY_HOOK_URL` | Yes | Vercel webhook URL for triggering deployments |
+| `OPENAI_API_KEY` | Recommended | OpenAI key for AI-generated copy (headlines, CTAs, descriptions) |
 | `TEMPLATE_OWNER` | No | Template repo owner (defaults to current repo owner) |
 | `TEMPLATE_REPO` | No | Template repo name (defaults to current repo name) |
 | `MAX_BUILDS_PER_DAY` | No | Daily build limit (default: 20) |
@@ -70,7 +72,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
 
 ### First Run
 
-1. Set repository secrets: `FACTORY_GITHUB_TOKEN`, `VERCEL_DEPLOY_HOOK_URL`
+1. Set repository secrets: `FACTORY_GITHUB_TOKEN`, `VERCEL_DEPLOY_HOOK_URL`, optionally `OPENAI_API_KEY`
 2. Go to **Actions** → **factory-build** → **Run workflow**
 3. Inputs:
    - `project_id`: `test-001`
@@ -95,58 +97,79 @@ Deterministic scoring (0–10) with hard rules:
 - HIGH saturation + WEAK differentiation → REJECT
 - Score <6 → REJECT, 6-7 → HOLD, ≥8 → APPROVE
 
-### Phase 3 — Repo Creation
-Idempotent GitHub repo creation from template. Retries on transient errors. Skips if repo already exists.
+### Phase 3 — Build Economics (ROI Gate)
+ROI evaluation before build:
+- Estimates build cost, expected return, ROI
+- Factors: pricing potential, speed to revenue, demand signals
+- NEGATIVE ROI → REJECT, LOW ROI → HOLD, HIGH ROI → PRIORITIZE
 
-### Phase 4 — Build Injection
-Injects BuildBrief into `PRODUCT_BRIEF.md` and `product.config.json`. Atomic writes for safe reruns.
-
-### Phase 5 — Build Pipeline Hardening
-Deterministic builds with retry logic, structured logging, and failure detection at every step.
-
-### Phase 6 — Deployment
-Triggers Vercel deployment via webhook. Retries on transient failures.
-
-### Phase 6.5 — Deployment Verification
-Health check with configurable retries. Fails pipeline if deployment is unreachable.
-
-### Phase 6.65 — Product Quality Gate
-Evaluates product quality (0–10) across 5 dimensions:
-- Clarity, Usability, UX Simplicity, Perceived Value, First Impression
-- <6 → BLOCK distribution, 6-7 → improve, ≥8 → proceed
-
-### Phase 7 — Tracking System
-Persistent SQLite database tracks: run_id, project_id, repo_url, deployment_url, status, timestamps, transitions.
-
-### Phase 8 — Control Layer
+### Phase 4 — Build Control / Rate Limiting
 Rate limiting, queue priority, and duplicate prevention:
 - `MAX_BUILDS_PER_DAY` enforcement
+- `MAX_PARALLEL_BUILDS` enforcement
 - Idempotency checking (no duplicate active builds)
 - Priority scoring by revenue score + demand + speed
 
-### Phase 8.5 — Build Economics
-ROI evaluation before build:
-- Estimates build cost, expected return, ROI
-- NEGATIVE ROI → REJECT, LOW ROI → HOLD, HIGH ROI → PRIORITIZE
+### Phase 5 — Repo Creation
+Idempotent GitHub repo creation from template. Retries on transient errors. Skips if repo already exists.
 
-### Phase 9 — Idempotency
-Idempotency key = `project_id:hash(normalized_brief)`. Enforced at validation, repo creation, and build control.
+### Phase 5.5 — AI Enhancement (Optional)
+When `OPENAI_API_KEY` is set, generates high-quality marketing copy:
+- Headline (problem → solution)
+- Subheading (value proposition)
+- Product description
+- CTA button text
+- Short pitch
+- Benefit bullets
 
-### Phase 10 — Failure Recovery
-Retry logic at every external call (GitHub API, Vercel, health checks). Structured failure alerts with `emit_alert.py`.
+Falls back to deterministic templates when API key is missing (marked as `reduced_quality`).
 
-### Phase 11 — Monetization Validation
-Generates `business_output.json` with: headline, CTA, monetization model, pricing, offer structure, GTM plan, conversion hints.
+### Phase 6 — Build Injection
+Injects BuildBrief + AI copy into `PRODUCT_BRIEF.md` and `product.config.json`. Atomic writes for safe reruns.
 
-### Phase 11.5 — Distribution Execution
-Generates distribution content:
-- Landing page content summary
+### Phase 7 — Deployment
+Triggers Vercel deployment via webhook. Retries on transient failures.
+
+### Phase 7.5 — Deployment Verification
+Health check with configurable retries. Fails pipeline if deployment is unreachable (no 404 allowed).
+
+### Phase 8 — Product Quality Gate
+Evaluates product quality (0–12) across 6 dimensions:
+- Clarity (product messaging)
+- Usability (CTA quality)
+- UX Simplicity (landing page completeness)
+- Perceived Value (monetization signals)
+- First Impression (deployment readiness)
+- Conversion Readiness (target user + pricing + distribution plan)
+
+Rules: <6 → BLOCK distribution, 6-7 → improve, ≥8 → proceed
+
+### Phase 9 — Monetization Validation
+Generates `business_output.json` with: headline, CTA, monetization model, pricing, offer structure, GTM plan, target user, distribution plan.
+
+Every output includes:
+- Product idea
+- Target user
+- Monetization method
+- Pricing hint
+- Distribution plan
+
+### Phase 10 — Distribution Execution
+Generates ready-to-use distribution content:
+- Landing page content summary with monetization messaging
 - Social media launch post
-- 5 outreach targets with personalized messages
+- 5 outreach targets with personalized messages and audience targeting
+- Monetization summary (product, target user, pricing, distribution)
 - Tracking structure (impressions, clicks, responses)
 
-### Phase 12 — Auto-Improvement Loop
+### Phase 11 — Auto-Improvement Loop
 Monitor + decide engine tracks success patterns: traffic, activation, revenue signals → kill/optimize/scale decisions.
+
+### Phase 11.5 — Portfolio Summary
+Buckets all projects into IGNORE / WATCH / SCALE categories based on monitoring signals.
+
+### Phase 12 — Lifecycle Tracking
+Persistent SQLite database tracks: run_id, project_id, repo_url, deployment_url, status, timestamps, transitions. Strict state machine prevents invalid transitions.
 
 ### Phase 13 — Automation
 GitHub Actions workflows:
@@ -174,18 +197,19 @@ GitHub Actions workflows:
  8. Build control check
  9. Lifecycle → building
 10. Create repository
-11. Inject BuildBrief
-12. Generate business output
-13. Trigger deployment
-14. Health check
-15. Quality gate
-16. Lifecycle → deployed → monitored
-17. Monitor & decide
-18. Distribution execution
-19. Portfolio summary
-20. Finalize response
-21. Alert on failure
-22. Upload artifacts
+11. AI enhancement (generate copy)
+12. Inject BuildBrief + AI copy
+13. Generate business output
+14. Trigger deployment
+15. Health check
+16. Quality gate (6-dimension scoring)
+17. Lifecycle → deployed → monitored
+18. Monitor & decide
+19. Distribution execution
+20. Portfolio summary
+21. Finalize response
+22. Alert on failure
+23. Upload artifacts
 ```
 
 ## Automated Testing
@@ -195,7 +219,7 @@ python3 scripts/run_factory_tests.py
 ```
 
 9-stage test suite:
-1. Script syntax checks (all 21 scripts)
+1. Script syntax checks (all scripts)
 2. Payload schema validation
 3. Idea source + scoring tests
 4. Business gate + lifecycle tests
@@ -203,17 +227,31 @@ python3 scripts/run_factory_tests.py
 6. Monitor/scale/portfolio tests
 7. Negative guard tests
 8. Quality gate + economics + distribution + control tests
-9. End-to-end pipeline simulation (13 steps)
+9. End-to-end pipeline simulation
 
 ## Monetization Readiness
 
 Every approved product includes:
 - Clear CTA in landing page
 - Pricing suggestion in business output
+- Target user identification
 - Monetization model (subscription/one-time)
+- Distribution plan with channel strategy
 - 2-channel GTM plan
 - Conversion hints
-- Distribution content ready for outreach
+- Ready-to-use outreach content
+- AI-enhanced copy (when API key available)
+
+## Product Presentation
+
+Every deployed product landing page includes:
+- Conversion-optimized hero section with headline and subheading
+- Email capture CTA form
+- Benefit bullets (3 key value propositions)
+- Pricing section (when pricing data available)
+- Bottom CTA for repeat conversion opportunity
+- Mobile-friendly responsive layout
+- Clean, uncluttered design with readable typography
 
 ## Documentation
 

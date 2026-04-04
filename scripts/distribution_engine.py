@@ -151,6 +151,23 @@ def _generate_outreach_targets(brief: dict[str, Any], business_output: dict[str,
     ]
 
 
+def _generate_monetization_summary(brief: dict[str, Any], business_output: dict[str, Any]) -> dict[str, str]:
+    """Generate a ready-to-use monetization summary for distribution."""
+    product_name = _required_str(brief, "product_name")
+    model = str(business_output.get("monetization_model", "subscription"))
+    pricing = str(business_output.get("pricing_suggestion", "Contact for pricing"))
+    target_user = str(business_output.get("target_user", "Professionals seeking better tools"))
+    distribution_plan = str(business_output.get("distribution_plan", ""))
+
+    return {
+        "product_idea": product_name,
+        "target_user": target_user,
+        "monetization_method": model,
+        "pricing_hint": pricing,
+        "distribution_plan": distribution_plan or f"Launch {product_name} across primary channels with CTA-driven landing page.",
+    }
+
+
 def generate_distribution(
     brief: dict[str, Any],
     business_output: dict[str, Any],
@@ -160,12 +177,14 @@ def generate_distribution(
     landing_content = _generate_landing_content(brief, business_output)
     first_post = _generate_first_post(brief, business_output)
     outreach_targets = _generate_outreach_targets(brief, business_output)
+    monetization_summary = _generate_monetization_summary(brief, business_output)
 
     return {
         "landing_content": landing_content,
         "first_post": first_post,
         "outreach_targets": outreach_targets,
         "outreach_count": len(outreach_targets),
+        "monetization_summary": monetization_summary,
         "deployment_url": deployment_url,
         "distribution_status": "content_generated",
         "tracking": {
