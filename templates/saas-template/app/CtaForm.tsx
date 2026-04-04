@@ -18,8 +18,14 @@ export default function CtaForm({ cta }: { cta: string }) {
         body: JSON.stringify({ email, source: "hero-cta" }),
       });
       if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        setErrorMessage(data.error ?? "Submission failed. Please try again.");
+        let errorMsg = "Submission failed. Please try again.";
+        try {
+          const data = (await res.json()) as { error?: string };
+          errorMsg = data.error ?? errorMsg;
+        } catch {
+          // non-JSON response — use default message
+        }
+        setErrorMessage(errorMsg);
         setStatus("error");
         return;
       }
@@ -61,6 +67,7 @@ export default function CtaForm({ cta }: { cta: string }) {
       <button
         type="submit"
         disabled={status === "submitting"}
+        aria-busy={status === "submitting"}
         style={{
           border: "none",
           borderRadius: 12,

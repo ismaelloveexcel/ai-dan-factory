@@ -367,7 +367,7 @@ PY
                 --idempotency-key "$IDEMPOTENCY_KEY" \
                 --result-file "$RESULT_DIR/inject_brief.json"
 
-              git -C "$GENERATED_REPO_DIR" config user.email "factory-bot@github-actions"
+              git -C "$GENERATED_REPO_DIR" config user.email "factory-bot@users.noreply.github.com"
               git -C "$GENERATED_REPO_DIR" config user.name "Factory Bot"
               git -C "$GENERATED_REPO_DIR" add PRODUCT_BRIEF.md product.config.json
               if ! git -C "$GENERATED_REPO_DIR" diff --cached --quiet; then
