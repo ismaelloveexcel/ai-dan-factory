@@ -75,8 +75,8 @@ def _generate_first_post(brief: dict[str, Any], business_output: dict[str, Any])
     cta = _required_str(brief, "cta")
     source_type = str(brief.get("source_type", "")).upper()
 
-    gtm_plan = business_output.get("gtm_plan", [])
-    primary_channel = gtm_plan[0]["channel"] if gtm_plan else "Social Media"
+    gtm_plan = business_output.get("gtm_plan") or []
+    primary_channel = gtm_plan[0]["channel"] if len(gtm_plan) > 0 else "Social Media"
 
     post_body = (
         f"Introducing {product_name}\n\n"
