@@ -5,6 +5,7 @@ Use this checklist right before the first real execution of `factory-build`.
 - [ ] GitHub repo secret `FACTORY_GITHUB_TOKEN` exists and is valid.
 - [ ] GitHub repo secret `VERCEL_DEPLOY_HOOK_URL` exists and points to the correct Vercel project.
 - [ ] Workflow input `dry_run` is set to `false` for the live run.
+- [ ] Workflow input `run_automated_tests_only` is set to `false` for the live run.
 - [ ] Workflow input `project_id` is a valid slug (example: `test-001`).
 - [ ] Workflow input `build_brief_json` is valid JSON (or copied from `test_data/live_test_brief.json`).
 - [ ] Confirm this expected output sequence after run:

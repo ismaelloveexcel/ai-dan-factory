@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
 TEMPLATE_DIR = ROOT / "templates" / "saas-template"
 LIVE_TEST_BRIEF = ROOT / "test_data" / "live_test_brief.json"
+AIDAN_DRY_RUN_BRIEF = ROOT / "test_data" / "aidan_dry_run_brief.json"
+AIDAN_LIVE_BRIEF = ROOT / "test_data" / "aidan_live_brief.json"
 
 
 class TestFailure(Exception):
@@ -93,6 +95,7 @@ def compile_check() -> None:
     print("==> [1/4] Running script syntax checks")
     scripts = [
         "scripts/factory_utils.py",
+        "scripts/normalize_workflow_inputs.py",
         "scripts/validate_brief.py",
         "scripts/create_project.py",
         "scripts/inject_brief.py",
@@ -302,12 +305,14 @@ def negative_guard_tests() -> None:
 
 
 def payload_schema_check() -> None:
-    print("==> [4/4] Validating live test payload schema")
-    payload = read_json(LIVE_TEST_BRIEF)
-    for field in ("project_id", "product_name", "problem", "solution", "cta"):
-        value = payload.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise TestFailure(f"Payload field '{field}' must be a non-empty string.")
+    print("==> [4/4] Validating test payload schemas")
+    payloads = [LIVE_TEST_BRIEF, AIDAN_DRY_RUN_BRIEF, AIDAN_LIVE_BRIEF]
+    for payload_path in payloads:
+        payload = read_json(payload_path)
+        for field in ("project_id", "product_name", "problem", "solution", "cta"):
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise TestFailure(f"{payload_path.name} field '{field}' must be a non-empty string.")
 
 
 def main() -> None:

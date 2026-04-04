@@ -14,14 +14,19 @@ This repository is a minimal factory that:
 │   └── workflows/
 │       └── factory-build.yml
 ├── docs/
+│   ├── aidan_integration_contract.md
 │   └── live_run_checklist.md
 ├── scripts/
 │   ├── create_project.py
 │   ├── factory_utils.py
+│   ├── normalize_workflow_inputs.py
 │   ├── inject_brief.py
 │   ├── deploy.py
+│   ├── run_factory_tests.py
 │   └── validate_brief.py
 ├── test_data/
+│   ├── aidan_dry_run_brief.json
+│   ├── aidan_live_brief.json
 │   └── live_test_brief.json
 └── templates/
     └── saas-template/
@@ -126,8 +131,10 @@ Workflow file: `.github/workflows/factory-build.yml`
 
 Manual trigger inputs:
 - `project_id` (string, required)
-- `build_brief_json` (string, required)
+- `build_brief_json` (string, required unless `run_automated_tests_only=true`)
 - `dry_run` (`true`/`false`)
+- `run_automated_tests_only` (`true`/`false`)
+- `test_mode` (`true`/`false`, deprecated alias for `run_automated_tests_only`)
 
 Execution order:
 1. Checkout
@@ -145,10 +152,17 @@ Final workflow response shape:
   "project_id": "acme-saas",
   "repo_url": "https://github.com/org/acme-saas",
   "status": "success",
+  "run_mode": "production",
+  "idempotency_key": "acme-saas:abc123",
+  "error_summary": "",
   "steps": [],
   "deployment": {
     "status": "triggered",
     "url": "https://acme.vercel.app"
+  },
+  "result_artifact": {
+    "name": "factory-result-123-1",
+    "path": "factory-response.json"
   }
 }
 ```
@@ -182,6 +196,7 @@ CI automation:
   - pull requests targeting `main`
   - manual trigger (`workflow_dispatch`)
 - Runs are concurrency-cancelled per branch/PR to avoid duplicate compute.
+- `factory-build` also supports `run_automated_tests_only=true` for tests-only execution with no external actions.
 
 Recommended merge efficiency setting (GitHub UI):
 - Branch protection for `main` should require status check:
@@ -196,9 +211,9 @@ Use this run to verify the first real execution without changing factory logic.
 2. Click **Run workflow** (recommended branch: `main`).
 3. Use these inputs:
    - `project_id`: `test-001`
-   - `build_brief_json`: leave empty and set `use_default_test_payload=true`, or paste contents of `test_data/live_test_brief.json`
+   - `build_brief_json`: paste contents of `test_data/live_test_brief.json`
    - `dry_run`: `false`
-   - `use_default_test_payload`: `true` (recommended for first live run)
+   - `run_automated_tests_only`: `false`
 
 Reference payload:
 
@@ -223,6 +238,7 @@ What to check first on failure:
 4. Final `factory_response` JSON in the **Finalize factory response** step.
 
 See the operator checklist: [docs/live_run_checklist.md](docs/live_run_checklist.md)
+See AI-DAN contract: [docs/aidan_integration_contract.md](docs/aidan_integration_contract.md)
 
 ## Fast workflow testing in Actions
 
@@ -231,9 +247,9 @@ To run checks without triggering repo creation/deployment:
 1. Open **Actions** → **factory-build**.
 2. Click **Run workflow**.
 3. Set:
-   - `test_mode=true`
+   - `run_automated_tests_only=true`
    - `dry_run=true`
-   - leave `build_brief_json` empty
+   - `build_brief_json` can be empty
    - `project_id` can stay `test-001`
 
-This executes the full validation/injection/deploy path in safe simulated mode.
+This executes tests-only mode and guarantees no live repo creation/deployment.

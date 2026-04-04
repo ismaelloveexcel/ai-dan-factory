@@ -1,0 +1,7 @@
+{
+  "project_id": "aidan-dryrun-001",
+  "product_name": "AI-DAN Dry Run Product",
+  "problem": "Operators need deterministic dry-run validation before allowing live factory execution.",
+  "solution": "A minimal product brief that verifies the end-to-end factory contract without external side effects.",
+  "cta": "Run simulation"
+}
