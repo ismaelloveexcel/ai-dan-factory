@@ -1,0 +1,7 @@
+{
+  "project_id": "test-001",
+  "product_name": "Test Product",
+  "problem": "Users need a simple way to validate the AI-DAN factory live pipeline.",
+  "solution": "A minimal placeholder product used only to test live repo creation and deployment.",
+  "cta": "Join waitlist"
+}

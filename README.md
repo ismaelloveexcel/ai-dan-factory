@@ -13,12 +13,16 @@ This repository is a minimal factory that:
 ├── .github/
 │   └── workflows/
 │       └── factory-build.yml
+├── docs/
+│   └── live_run_checklist.md
 ├── scripts/
 │   ├── create_project.py
 │   ├── factory_utils.py
 │   ├── inject_brief.py
 │   ├── deploy.py
 │   └── validate_brief.py
+├── test_data/
+│   └── live_test_brief.json
 └── templates/
     └── saas-template/
         ├── .gitignore
@@ -153,3 +157,38 @@ Final workflow response shape:
 
 - `FACTORY_GITHUB_TOKEN`
 - `VERCEL_DEPLOY_HOOK_URL`
+
+## First Live Run
+
+Use this run to verify the first real execution without changing factory logic.
+
+1. Open GitHub → **Actions** → **factory-build** workflow.
+2. Click **Run workflow** (recommended branch: `main`).
+3. Use these inputs:
+   - `project_id`: `test-001`
+   - `build_brief_json`: contents of `test_data/live_test_brief.json`
+   - `dry_run`: `false`
+
+Reference payload:
+
+```json
+{"project_id":"test-001","product_name":"Test Product","problem":"Users need a simple way to validate the AI-DAN factory live pipeline.","solution":"A minimal placeholder product used only to test live repo creation and deployment.","cta":"Join waitlist"}
+```
+
+Recommended first settings:
+- Run once with `dry_run=true` if you want one final simulation.
+- Run with `dry_run=false` for the first actual live test.
+
+What success looks like:
+- Steps `Validate BuildBrief`, `Create project repository`, `Inject BuildBrief`, and `Deploy project` all complete.
+- Final summary shows run status as **SUCCESS**.
+- Summary includes a repo URL and deployment status.
+- Step output includes the structured factory response JSON (`factory_response`).
+
+What to check first on failure:
+1. **Validate BuildBrief** step (invalid JSON, missing fields, `project_id` mismatch).
+2. **Create project repository** step (token scope/permissions).
+3. **Deploy project** step (deploy hook URL validity and Vercel access).
+4. Final `factory_response` JSON in the **Finalize factory response** step.
+
+See the operator checklist: [docs/live_run_checklist.md](docs/live_run_checklist.md)

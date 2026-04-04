@@ -217,17 +217,27 @@ jobs:
           response_file = Path(os.environ["RESULT_DIR"]) / "factory-response.json"
           response = json.loads(response_file.read_text(encoding="utf-8"))
           project_id = response["project_id"]
+          run_status = str(response.get("status", "failed")).upper()
           repo_url = response.get("repo_url") or "not-created"
           deployment_url = response.get("deployment", {}).get("url") or "not-available"
 
           lines = [
+              f"RUN STATUS: {run_status}",
               f"PROJECT CREATED: {project_id}",
               f"REPO: {repo_url}",
               f"DEPLOYMENT: {deployment_url}",
               "",
-              "NEXT STEP:",
-              "Validate landing page and start traffic",
           ]
+          if run_status == "SUCCESS":
+              lines += [
+                  "NEXT STEP:",
+                  "Validate landing page and start traffic",
+              ]
+          else:
+              lines += [
+                  "NEXT STEP:",
+                  "Check failed step logs first: Validate BuildBrief -> Create project repository -> Deploy project.",
+              ]
           summary = "\n".join(lines)
           print(summary)
 
