@@ -31,13 +31,6 @@ class QualityGateError(Exception):
     pass
 
 
-def _required_str(data: dict[str, Any], key: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise QualityGateError(f"Missing required field '{key}'.")
-    return value.strip()
-
-
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise QualityGateError(f"File not found: {path}")

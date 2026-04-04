@@ -99,11 +99,15 @@ def _normalize_payload(raw: dict[str, Any]) -> dict[str, str]:
     normalized["project_id"] = project_id
 
     # Preserve optional scoring fields when present in the input.
+    # Supports camelCase variants (e.g. buildComplexity, speedToRevenue) via _canonical_key.
     OPTIONAL_PASSTHROUGH = ("build_complexity", "speed_to_revenue")
-    for opt_field in OPTIONAL_PASSTHROUGH:
-        if opt_field in normalized:
+    optional_alias_mapping = {_canonical_key(field_name): field_name for field_name in OPTIONAL_PASSTHROUGH}
+    for key, raw_value in raw.items():
+        if not isinstance(key, str):
             continue
-        raw_value = raw.get(opt_field, "")
+        opt_field = optional_alias_mapping.get(_canonical_key(key))
+        if not opt_field or opt_field in normalized:
+            continue
         if isinstance(raw_value, str) and raw_value.strip():
             normalized[opt_field] = normalize_text(raw_value)
 

@@ -82,11 +82,14 @@ def evaluate_economics(brief: dict[str, Any]) -> dict[str, Any]:
 
     roi = round(expected_return / build_cost, 2) if build_cost > 0 else 0.0
 
-    min_roi = float(os.environ.get("MIN_ROI_THRESHOLD", "1.5"))
+    try:
+        min_roi = float(os.environ.get("MIN_ROI_THRESHOLD", "1.5"))
+    except ValueError:
+        min_roi = 1.5
 
-    if roi <= 0:
+    if roi < 1.0:
         decision = "REJECT"
-        reason = "Negative or zero ROI — build rejected."
+        reason = f"ROI {roi} below 1.0 — expected return does not cover build cost."
     elif roi < min_roi:
         decision = "HOLD"
         reason = f"ROI {roi} below threshold {min_roi} — build on hold."

@@ -4,7 +4,7 @@ Build control layer — enforces rate limits, queue priority, and duplicate prev
 
 Controls:
   - max_builds_per_day
-  - max_parallel_builds
+  - max_parallel_builds (active non-terminal builds)
   - queue priority (by revenue score)
 
 Prevents:
@@ -78,6 +78,21 @@ def check_idempotency(store: FactoryStateStore, project_id: str) -> dict[str, An
     }
 
 
+def check_parallel_builds(store: FactoryStateStore, max_parallel: int) -> dict[str, Any]:
+    """Check if the number of active (non-terminal) builds exceeds the limit."""
+    recent = store.list_recent_runs(limit=max_parallel + 50)
+    terminal_states = {"rejected", "hold", "scaled", "killed"}
+    active = [r for r in recent if str(r.get("state", "")) not in terminal_states]
+    count = len(active)
+    allowed = count < max_parallel
+    return {
+        "active_builds": count,
+        "max_parallel": max_parallel,
+        "allowed": allowed,
+        "reason": "" if allowed else f"Parallel build limit reached: {count}/{max_parallel}",
+    }
+
+
 def evaluate_priority(score: int, demand: str, speed: str) -> dict[str, Any]:
     """Compute queue priority from business signals."""
     priority_score = score
@@ -117,6 +132,7 @@ def main() -> None:
     project_id = args.project_id.strip() or "unknown"
 
     max_per_day = int(os.environ.get("MAX_BUILDS_PER_DAY", "20"))
+    max_parallel = int(os.environ.get("MAX_PARALLEL_BUILDS", "3"))
 
     log_event(project_id=project_id, step=STEP_NAME, status="started", mode=mode)
 
@@ -128,6 +144,7 @@ def main() -> None:
         try:
             limits = check_build_limits(store, max_per_day)
             idempotency = check_idempotency(store, project_id)
+            parallel = check_parallel_builds(store, max_parallel)
         finally:
             store.close()
 
@@ -146,6 +163,10 @@ def main() -> None:
             blocked = True
             block_reasons.append(str(idempotency.get("reason", "Duplicate build detected.")))
 
+        if not parallel["allowed"]:
+            blocked = True
+            block_reasons.append(str(parallel["reason"]))
+
         control_decision = "BLOCKED" if blocked and not args.dry_run else "ALLOWED"
 
         payload = {
@@ -157,6 +178,7 @@ def main() -> None:
             "block_reasons": block_reasons,
             "limits": limits,
             "idempotency_check": idempotency,
+            "parallel_check": parallel,
             "priority": priority,
         }
 

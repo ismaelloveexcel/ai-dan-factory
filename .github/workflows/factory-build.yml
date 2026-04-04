@@ -281,6 +281,24 @@ jobs:
             --project-id "$PROJECT_ID_INPUT" \
             $DRY_RUN_FLAG
 
+          if [ "${EFFECTIVE_DRY_RUN}" != "true" ]; then
+            ECONOMICS_DECISION="$(python - <<'PY' "$RESULT_DIR/build_economics.json"
+          import json
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          print(data.get("economics_decision", ""))
+          PY
+            )"
+
+            if [ "$ECONOMICS_DECISION" = "HOLD" ]; then
+              echo "Build economics decision is HOLD; pausing pipeline."
+              exit 1
+            fi
+          fi
+
       - name: 8.6) Build control and rate limiting
         if: env.RUN_MODE != 'tests_only'
         run: |

@@ -12,7 +12,7 @@ Create Repo → Inject → Build → Deploy → Health Check → Quality Gate �
 Monitor → Distribute → Track → Learn
 ```
 
-No step can be skipped. Every decision is deterministic and auditable.
+Every decision is deterministic and auditable. Steps with missing prerequisites (e.g. no business output) are gracefully skipped with warnings.
 
 ## Architecture
 
@@ -195,7 +195,7 @@ python3 scripts/run_factory_tests.py
 ```
 
 9-stage test suite:
-1. Script syntax checks (all 20 scripts)
+1. Script syntax checks (all 21 scripts)
 2. Payload schema validation
 3. Idea source + scoring tests
 4. Business gate + lifecycle tests
