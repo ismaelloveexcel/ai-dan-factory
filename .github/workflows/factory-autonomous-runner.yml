@@ -74,6 +74,16 @@ jobs:
             --brief-file "$SELECTED_BRIEF" \
             --result-file "$RESULT_DIR/scoring.json"
 
+          python scripts/monetization_filter.py \
+            --brief-file "$SELECTED_BRIEF" \
+            --result-file "$RESULT_DIR/monetization_filter.json"
+
+          python scripts/portfolio_memory.py \
+            --brief-file "$SELECTED_BRIEF" \
+            --project-id "$PROJECT_ID" \
+            --state-db "$STATE_DB" \
+            --result-file "$RESULT_DIR/portfolio_memory.json"
+
           python scripts/validate_business_gate.py \
             --brief-file "$SELECTED_BRIEF" \
             --result-file "$RESULT_DIR/business_gate.json" \

@@ -228,7 +228,58 @@ jobs:
             --result-file "$RESULT_DIR/validate_brief.json" \
             $DRY_RUN_FLAG
 
-      - name: 8) Unified business gate
+      - name: 8) Monetization priority filter
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          BRIEF_SOURCE="$NORMALIZED_BRIEF_FILE"
+          if [ ! -s "$BRIEF_SOURCE" ]; then
+            BRIEF_SOURCE="$BRIEF_FILE"
+          fi
+          python scripts/monetization_filter.py \
+            --brief-file "$BRIEF_SOURCE" \
+            --result-file "$RESULT_DIR/monetization_filter.json"
+
+          PASS_FILTER="$(python - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ["RESULT_DIR"], "monetization_filter.json"), "r", encoding="utf-8") as f:
+              print("true" if json.load(f).get("pass_filter") else "false")
+          PY
+          )"
+          echo "MONETIZATION_PASS=$PASS_FILTER" >> "$GITHUB_ENV"
+          if [ "$PASS_FILTER" != "true" ]; then
+            echo "Monetization filter failed. Idea does not meet fast-revenue criteria."
+            exit 1
+          fi
+
+      - name: 9) Portfolio memory deduplication check
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          BRIEF_SOURCE="$NORMALIZED_BRIEF_FILE"
+          if [ ! -s "$BRIEF_SOURCE" ]; then
+            BRIEF_SOURCE="$BRIEF_FILE"
+          fi
+          python scripts/portfolio_memory.py \
+            --brief-file "$BRIEF_SOURCE" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --state-db "$STATE_DB" \
+            --result-file "$RESULT_DIR/portfolio_memory.json" \
+            --history-file "$RESULT_DIR/portfolio_history.json"
+
+          DEDUP_REC="$(python - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ["RESULT_DIR"], "portfolio_memory.json"), "r", encoding="utf-8") as f:
+              print(json.load(f).get("recommendation", "PROCEED"))
+          PY
+          )"
+          echo "DEDUP_RECOMMENDATION=$DEDUP_REC" >> "$GITHUB_ENV"
+          if [ "$DEDUP_REC" = "REJECT" ]; then
+            echo "Portfolio memory: duplicate of previously failed idea. Blocked."
+            exit 1
+          fi
+
+      - name: 10) Unified business gate
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -266,7 +317,7 @@ jobs:
             exit 1
           fi
 
-      - name: 9) Move lifecycle to building
+      - name: 11) Move lifecycle to building
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -282,7 +333,7 @@ jobs:
             --metadata-json "{\"score\":$BUSINESS_SCORE}" \
             > "$RESULT_DIR/lifecycle_building.json"
 
-      - name: 10) Create project repository
+      - name: 12) Create project repository
         if: env.RUN_MODE != 'tests_only'
         env:
           GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
@@ -314,7 +365,7 @@ PY
             --result-file "$RESULT_DIR/create_repo.json" \
             $DRY_RUN_FLAG
 
-      - name: 11) Inject BuildBrief into generated repository
+      - name: 13) Inject BuildBrief into generated repository
         if: env.RUN_MODE != 'tests_only'
         env:
           GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
@@ -377,7 +428,7 @@ PY
             fi
           fi
 
-      - name: 12) Generate business output
+      - name: 14) Generate business output
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -386,7 +437,7 @@ PY
             --output-file "$RESULT_DIR/business_output.json" \
             --result-file "$RESULT_DIR/business_output_result.json"
 
-      - name: 13) Trigger deployment
+      - name: 15) Trigger deployment
         if: env.RUN_MODE != 'tests_only'
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
@@ -403,7 +454,7 @@ PY
             --result-file "$RESULT_DIR/deploy.json" \
             $DRY_RUN_FLAG
 
-      - name: 14) Deployment health check
+      - name: 16) Deployment health check
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -428,7 +479,7 @@ PY
             --result-file "$RESULT_DIR/deploy_health.json" \
             $DRY_RUN_FLAG
 
-      - name: 15) Move lifecycle to deployed
+      - name: 17) Move lifecycle to deployed
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -444,7 +495,7 @@ PY
             --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
             > "$RESULT_DIR/lifecycle_deployed.json"
 
-      - name: 16) Move lifecycle to monitored
+      - name: 18) Move lifecycle to monitored
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -460,7 +511,7 @@ PY
             --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
             > "$RESULT_DIR/lifecycle_monitored.json"
 
-      - name: 17) Monitor and decide scale/kill
+      - name: 19) Monitor and decide scale/kill
         if: env.RUN_MODE != 'tests_only'
         run: |
           set -euo pipefail
@@ -475,7 +526,23 @@ PY
             --timestamp-utc "$TIMESTAMP_UTC" \
             --result-file "$RESULT_DIR/monitoring_decision.json"
 
-      - name: 18) Portfolio simplified summary
+      - name: 20) Revenue loop evaluation
+        if: env.RUN_MODE != 'tests_only'
+        run: |
+          set -euo pipefail
+          python scripts/revenue_loop.py \
+            --state-db "$STATE_DB" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --traffic-signal "${{ inputs.traffic_signal }}" \
+            --activation-metric "${{ inputs.activation_metric }}" \
+            --revenue-signal-status "${{ inputs.revenue_signal_status }}" \
+            --workflow-url "$WORKFLOW_URL" \
+            --timestamp-utc "$TIMESTAMP_UTC" \
+            --result-file "$RESULT_DIR/revenue_loop.json"
+
+      - name: 21) Portfolio simplified summary
         if: always()
         run: |
           set -euo pipefail
@@ -483,7 +550,7 @@ PY
             --state-db "$STATE_DB" \
             --result-file "$RESULT_DIR/portfolio_summary.json"
 
-      - name: 19) Finalize factory response
+      - name: 22) Finalize factory response
         if: always()
         id: finalize
         env:
@@ -519,6 +586,8 @@ PY
               ("normalize_inputs", result_dir / "normalize_inputs.json"),
               ("automated_tests_only", result_dir / "automated_tests_only.json"),
               ("validate_brief", result_dir / "validate_brief.json"),
+              ("monetization_filter", result_dir / "monetization_filter.json"),
+              ("portfolio_memory", result_dir / "portfolio_memory.json"),
               ("business_gate", result_dir / "business_gate.json"),
               ("create_repo", result_dir / "create_repo.json"),
               ("inject_brief", result_dir / "inject_brief.json"),
@@ -526,6 +595,7 @@ PY
               ("deploy", result_dir / "deploy.json"),
               ("deploy_health", result_dir / "deploy_health.json"),
               ("monitoring_decision", result_dir / "monitoring_decision.json"),
+              ("revenue_loop", result_dir / "revenue_loop.json"),
           ]
 
           steps = []
@@ -641,7 +711,7 @@ PY
           print("\n".join(lines))
           PY
 
-      - name: 20) Emit alert payload on failure
+      - name: 23) Emit alert payload on failure
         if: failure()
         run: |
           set -euo pipefail
@@ -654,7 +724,7 @@ PY
             --error-summary "Check factory-response.json and step logs for details" \
             --result-file "$RESULT_DIR/alert_payload.json"
 
-      - name: 21) Upload result artifacts
+      - name: 24) Upload result artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:

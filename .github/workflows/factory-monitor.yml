@@ -26,13 +26,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run monitor and decision engine
+      - name: Run portfolio summary and revenue loop
         run: |
           set -euo pipefail
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-monitor-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
           STATE_DB="data/lifecycle.sqlite"
-          SIGNALS_OUT="$RESULT_DIR/monitoring_decisions.json"
           SUMMARY_OUT="$RESULT_DIR/portfolio_summary.json"
+          HISTORY_OUT="$RESULT_DIR/portfolio_history.json"
 
           MAX_ITEMS_PER_CATEGORY="${{ github.event.inputs.max_items_per_category }}"
           MAX_ITEMS_PER_CATEGORY="${MAX_ITEMS_PER_CATEGORY:-5}"
@@ -41,6 +41,28 @@ jobs:
             --state-db "$STATE_DB" \
             --result-file "$SUMMARY_OUT" \
             --max-items-per-category "$MAX_ITEMS_PER_CATEGORY"
+
+          # Generate portfolio history for observability
+          if [ -f "$STATE_DB" ]; then
+            python - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, "scripts")
+          from portfolio_memory import get_portfolio_history
+          from state_store import FactoryStateStore
+
+          db = os.environ.get("STATE_DB", "data/lifecycle.sqlite")
+          result_dir = os.environ["RESULT_DIR"]
+          try:
+              store = FactoryStateStore(db)
+              history = get_portfolio_history(store)
+              store.close()
+              out = os.path.join(result_dir, "portfolio_history.json")
+              with open(out, "w", encoding="utf-8") as f:
+                  json.dump(history, f, indent=2, ensure_ascii=True)
+          except Exception as exc:
+              print(f"[warn] Portfolio history skipped: {exc}")
+          PY
+          fi
 
           echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
 
