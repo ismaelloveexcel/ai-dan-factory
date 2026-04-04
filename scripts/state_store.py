@@ -121,6 +121,35 @@ class FactoryStateStore:
             );
 
             CREATE INDEX IF NOT EXISTS idx_monitoring_project ON monitoring_signals(project_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS payment_tracking (
+              run_key TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              run_attempt TEXT NOT NULL,
+              project_id TEXT NOT NULL,
+              payment_link TEXT NOT NULL DEFAULT '',
+              payment_provider TEXT NOT NULL DEFAULT '',
+              pricing_value REAL DEFAULT 0,
+              payment_attempted INTEGER NOT NULL DEFAULT 0,
+              payment_success INTEGER NOT NULL DEFAULT 0,
+              revenue_amount REAL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY(run_key) REFERENCES runs(run_key) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_payment_project ON payment_tracking(project_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS feedback_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id TEXT NOT NULL,
+              feedback_type TEXT NOT NULL,
+              comment TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback_log(project_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_feedback_type ON feedback_log(feedback_type);
             """
         )
         self.conn.commit()
@@ -479,6 +508,119 @@ class FactoryStateStore:
         ).fetchall()
         return [{k: row[k] for k in row.keys()} for row in rows]
 
+    def upsert_payment_tracking(
+        self,
+        *,
+        run_id: str,
+        run_attempt: str,
+        project_id: str,
+        payment_link: str = "",
+        payment_provider: str = "",
+        pricing_value: float = 0,
+        payment_attempted: bool = False,
+        payment_success: bool = False,
+        revenue_amount: float = 0,
+    ) -> None:
+        run_key = self._run_key(run_id, run_attempt)
+        now = utc_now()
+        row = self.conn.execute(
+            "SELECT run_key FROM payment_tracking WHERE run_key = ?",
+            (run_key,),
+        ).fetchone()
+        if row is None:
+            self.conn.execute(
+                """
+                INSERT INTO payment_tracking (
+                  run_key, run_id, run_attempt, project_id, payment_link, payment_provider,
+                  pricing_value, payment_attempted, payment_success, revenue_amount, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_key,
+                    run_id,
+                    run_attempt,
+                    project_id,
+                    payment_link,
+                    payment_provider,
+                    pricing_value,
+                    1 if payment_attempted else 0,
+                    1 if payment_success else 0,
+                    revenue_amount,
+                    now,
+                    now,
+                ),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE payment_tracking
+                SET project_id = ?,
+                    payment_link = ?,
+                    payment_provider = ?,
+                    pricing_value = ?,
+                    payment_attempted = ?,
+                    payment_success = ?,
+                    revenue_amount = ?,
+                    updated_at = ?
+                WHERE run_key = ?
+                """,
+                (
+                    project_id,
+                    payment_link,
+                    payment_provider,
+                    pricing_value,
+                    1 if payment_attempted else 0,
+                    1 if payment_success else 0,
+                    revenue_amount,
+                    now,
+                    run_key,
+                ),
+            )
+        self.conn.commit()
+
+    def get_payment_tracking(self, run_id: str, run_attempt: str) -> dict[str, Any] | None:
+        run_key = self._run_key(run_id, run_attempt)
+        row = self.conn.execute(
+            "SELECT * FROM payment_tracking WHERE run_key = ?",
+            (run_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        result = {k: row[k] for k in row.keys()}
+        result["payment_attempted"] = bool(result["payment_attempted"])
+        result["payment_success"] = bool(result["payment_success"])
+        return result
+
+    def insert_feedback(
+        self,
+        *,
+        project_id: str,
+        feedback_type: str,
+        comment: str = "",
+    ) -> None:
+        now = utc_now()
+        self.conn.execute(
+            """
+            INSERT INTO feedback_log (project_id, feedback_type, comment, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (project_id, feedback_type, comment, now),
+        )
+        self.conn.commit()
+
+    def list_feedback(self, project_id: str = "", limit: int = 500) -> list[dict[str, Any]]:
+        if project_id:
+            rows = self.conn.execute(
+                "SELECT * FROM feedback_log WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM feedback_log ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [{k: row[k] for k in row.keys()} for row in rows]
+
 
 class StateStore:
     """
@@ -587,3 +729,47 @@ class StateStore:
 
     def list_monitoring_signals(self, limit: int = 500) -> list[dict[str, Any]]:
         return self._store.list_monitoring_signals(limit=limit)
+
+    def record_payment_tracking(
+        self,
+        *,
+        run_id: str,
+        run_attempt: str,
+        project_id: str,
+        payment_link: str = "",
+        payment_provider: str = "",
+        pricing_value: float = 0,
+        payment_attempted: bool = False,
+        payment_success: bool = False,
+        revenue_amount: float = 0,
+    ) -> None:
+        self._store.upsert_payment_tracking(
+            run_id=run_id,
+            run_attempt=run_attempt,
+            project_id=project_id,
+            payment_link=payment_link,
+            payment_provider=payment_provider,
+            pricing_value=pricing_value,
+            payment_attempted=payment_attempted,
+            payment_success=payment_success,
+            revenue_amount=revenue_amount,
+        )
+
+    def get_payment_tracking(self, run_id: str, run_attempt: str) -> dict[str, Any] | None:
+        return self._store.get_payment_tracking(run_id, run_attempt)
+
+    def record_feedback(
+        self,
+        *,
+        project_id: str,
+        feedback_type: str,
+        comment: str = "",
+    ) -> None:
+        self._store.insert_feedback(
+            project_id=project_id,
+            feedback_type=feedback_type,
+            comment=comment,
+        )
+
+    def list_feedback(self, project_id: str = "", limit: int = 500) -> list[dict[str, Any]]:
+        return self._store.list_feedback(project_id=project_id, limit=limit)

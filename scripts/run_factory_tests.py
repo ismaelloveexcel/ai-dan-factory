@@ -89,7 +89,7 @@ def read_json(path: Path) -> dict[str, object]:
 
 
 def compile_check() -> None:
-    print("==> [1/7] Running script syntax checks")
+    print("==> [1/9] Running script syntax checks")
     scripts = [
         "scripts/factory_utils.py",
         "scripts/idea_source_engine.py",
@@ -107,13 +107,16 @@ def compile_check() -> None:
         "scripts/create_project.py",
         "scripts/inject_brief.py",
         "scripts/deploy.py",
+        "scripts/payment_link_generator.py",
+        "scripts/feedback_processor.py",
+        "scripts/validate_build_readiness.py",
         "scripts/run_factory_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
 
 
 def payload_schema_check() -> None:
-    print("==> [2/7] Validating test payload schemas")
+    print("==> [2/9] Validating test payload schemas")
     payloads = [LIVE_TEST_BRIEF, AIDAN_DRY_RUN_BRIEF, AIDAN_LIVE_BRIEF]
     required = (
         "project_id",
@@ -148,7 +151,7 @@ def payload_schema_check() -> None:
 
 
 def idea_source_and_scoring_tests() -> None:
-    print("==> [3/7] Running idea source + scoring tests")
+    print("==> [3/9] Running idea source + scoring tests")
     with tempfile.TemporaryDirectory(prefix="factory-idea-source-") as tmp_dir:
         tmp = Path(tmp_dir)
         selected = tmp / "selected.json"
@@ -195,7 +198,7 @@ def idea_source_and_scoring_tests() -> None:
 
 
 def business_gate_and_lifecycle_tests() -> None:
-    print("==> [4/7] Running business gate + lifecycle state tests")
+    print("==> [4/9] Running business gate + lifecycle state tests")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -303,7 +306,7 @@ def business_gate_and_lifecycle_tests() -> None:
 
 
 def full_dry_run_pipeline() -> None:
-    print("==> [5/7] Running happy-path dry-run execution tests")
+    print("==> [5/9] Running happy-path dry-run execution tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-") as tmp_dir:
         tmp = Path(tmp_dir)
         normalized = tmp / "normalized.json"
@@ -421,7 +424,7 @@ def full_dry_run_pipeline() -> None:
 
 
 def monitoring_and_summary_tests() -> None:
-    print("==> [6/7] Running monitor/scale/portfolio tests")
+    print("==> [6/9] Running monitor/scale/portfolio tests")
     with tempfile.TemporaryDirectory(prefix="factory-monitor-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -521,7 +524,7 @@ def monitoring_and_summary_tests() -> None:
 
 
 def negative_guard_tests() -> None:
-    print("==> [7/7] Running negative guard tests")
+    print("==> [7/9] Running negative guard tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-negative-") as tmp_dir:
         tmp = Path(tmp_dir)
         invalid_brief = tmp / "invalid_brief.json"
@@ -660,6 +663,238 @@ def negative_guard_tests() -> None:
         )
 
 
+def payment_and_feedback_tests() -> None:
+    print("==> [8/9] Running payment link + feedback + build readiness tests")
+    with tempfile.TemporaryDirectory(prefix="factory-payment-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        business_output = tmp / "business_output.json"
+        payment_result = tmp / "payment_result.json"
+        feedback_log = tmp / "feedback_log.json"
+        feedback_result = tmp / "feedback_result.json"
+        readiness_result = tmp / "readiness_result.json"
+
+        # Create a business output file to feed into payment generator.
+        business_data = {
+            "project_id": "test-pay-001",
+            "headline": "Test Payment Product: Solve payment testing needs.",
+            "CTA": "Buy Now",
+            "monetization_model": "subscription",
+            "pricing_suggestion": "$19/month starter, $49/month growth",
+            "offer_structure": "Free trial -> Starter plan -> Growth plan with annual discount.",
+            "gtm_plan": [],
+            "conversion_hints": {},
+            "problem": "Need payment testing",
+            "solution": "Automated payment test",
+        }
+        business_output.write_text(
+            json.dumps(business_data, indent=2) + "\n", encoding="utf-8"
+        )
+
+        # --- Payment link generator (dry-run) ---
+        template_copy = tmp / "project"
+        shutil.copytree(TEMPLATE_DIR, template_copy)
+
+        run_command(
+            [
+                sys.executable,
+                "scripts/payment_link_generator.py",
+                "--business-output-file",
+                str(business_output),
+                "--project-dir",
+                str(template_copy),
+                "--provider",
+                "stripe",
+                "--result-file",
+                str(payment_result),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        payment = read_json(payment_result)
+        if payment.get("status") != "success":
+            raise TestFailure("payment_link_generator did not succeed")
+        if not str(payment.get("payment_link", "")).strip():
+            raise TestFailure("payment_link_generator did not emit payment_link")
+        if not str(payment.get("payment_provider", "")).strip():
+            raise TestFailure("payment_link_generator did not emit payment_provider")
+
+        # Verify payment.config.json was written to project dir.
+        payment_config = read_json(template_copy / "payment.config.json")
+        if not str(payment_config.get("payment_link", "")).strip():
+            raise TestFailure("payment.config.json missing payment_link")
+        if float(payment_config.get("pricing_value", 0)) <= 0:
+            raise TestFailure("payment.config.json pricing_value must be positive")
+
+        # --- Feedback processor ---
+        feedback_input = tmp / "feedback_input.json"
+        feedback_entries = [
+            {"feedback_type": "too_expensive", "project_id": "test-pay-001"},
+            {"feedback_type": "not_clear", "project_id": "test-pay-001"},
+            {"feedback_type": "too_expensive", "project_id": "test-pay-001"},
+        ]
+        feedback_input.write_text(json.dumps(feedback_entries), encoding="utf-8")
+
+        run_command(
+            [
+                sys.executable,
+                "scripts/feedback_processor.py",
+                "--feedback-file",
+                str(feedback_input),
+                "--log-file",
+                str(feedback_log),
+                "--result-file",
+                str(feedback_result),
+                "--project-id",
+                "test-pay-001",
+            ],
+            expect_success=True,
+        )
+        fb_result = read_json(feedback_result)
+        if fb_result.get("status") != "success":
+            raise TestFailure("feedback_processor did not succeed")
+        if int(fb_result.get("entries_processed", 0)) != 3:
+            raise TestFailure("feedback_processor should have processed 3 entries")
+        signals = fb_result.get("signals", {})
+        if not isinstance(signals, dict):
+            raise TestFailure("feedback_processor must emit signals dict")
+
+        # Verify feedback_log.json was written.
+        fb_log = read_json(feedback_log)
+        if not isinstance(fb_log.get("entries"), list):
+            raise TestFailure("feedback_log.json missing entries array")
+        if not isinstance(fb_log.get("aggregation"), dict):
+            raise TestFailure("feedback_log.json missing aggregation")
+
+        # --- Build readiness validation (VALID case) ---
+        run_command(
+            [
+                sys.executable,
+                "scripts/validate_build_readiness.py",
+                "--project-dir",
+                str(template_copy),
+                "--project-id",
+                "test-pay-001",
+                "--result-file",
+                str(readiness_result),
+            ],
+            expect_success=True,
+        )
+        readiness = read_json(readiness_result)
+        if readiness.get("build_status") != "VALID":
+            raise TestFailure(
+                f"validate_build_readiness should be VALID, got: {readiness.get('build_status')}. "
+                f"Failures: {readiness.get('failures')}"
+            )
+
+        # --- Build readiness validation (INVALID case — missing payment) ---
+        invalid_project = tmp / "invalid-project"
+        shutil.copytree(TEMPLATE_DIR, invalid_project)
+        invalid_result = tmp / "invalid_readiness.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/validate_build_readiness.py",
+                "--project-dir",
+                str(invalid_project),
+                "--project-id",
+                "test-invalid",
+                "--result-file",
+                str(invalid_result),
+            ],
+            expect_success=False,
+        )
+        invalid_readiness = read_json(invalid_result)
+        if invalid_readiness.get("build_status") != "INVALID":
+            raise TestFailure("validate_build_readiness should be INVALID for missing payment")
+
+
+def payment_tracking_db_tests() -> None:
+    print("==> [9/9] Running payment tracking + feedback DB tests")
+    with tempfile.TemporaryDirectory(prefix="factory-payment-db-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        state_db = tmp / "state.sqlite"
+
+        # Import state_store directly for DB-level tests.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import importlib
+            state_store_mod = importlib.import_module("state_store")
+            store = state_store_mod.FactoryStateStore(str(state_db))
+
+            # Initialize a run first.
+            store.initialize_run(
+                run_id="pay-run-1",
+                run_attempt="1",
+                project_id="pay-test-001",
+            )
+
+            # Test payment tracking upsert + get.
+            store.upsert_payment_tracking(
+                run_id="pay-run-1",
+                run_attempt="1",
+                project_id="pay-test-001",
+                payment_link="https://buy.stripe.com/test_pay",
+                payment_provider="stripe",
+                pricing_value=19.0,
+                payment_attempted=True,
+                payment_success=False,
+                revenue_amount=0,
+            )
+            pt = store.get_payment_tracking("pay-run-1", "1")
+            if pt is None:
+                raise TestFailure("payment_tracking record not found after upsert")
+            if pt["payment_link"] != "https://buy.stripe.com/test_pay":
+                raise TestFailure("payment_tracking payment_link mismatch")
+            if pt["payment_provider"] != "stripe":
+                raise TestFailure("payment_tracking payment_provider mismatch")
+            if pt["payment_attempted"] is not True:
+                raise TestFailure("payment_tracking payment_attempted should be True")
+            if pt["payment_success"] is not False:
+                raise TestFailure("payment_tracking payment_success should be False")
+
+            # Update to success.
+            store.upsert_payment_tracking(
+                run_id="pay-run-1",
+                run_attempt="1",
+                project_id="pay-test-001",
+                payment_link="https://buy.stripe.com/test_pay",
+                payment_provider="stripe",
+                pricing_value=19.0,
+                payment_attempted=True,
+                payment_success=True,
+                revenue_amount=19.0,
+            )
+            pt2 = store.get_payment_tracking("pay-run-1", "1")
+            if pt2 is None:
+                raise TestFailure("payment_tracking record missing after update")
+            if pt2["payment_success"] is not True:
+                raise TestFailure("payment_tracking payment_success should be True after update")
+            if pt2["revenue_amount"] != 19.0:
+                raise TestFailure("payment_tracking revenue_amount mismatch")
+
+            # Test feedback insert + list.
+            store.insert_feedback(
+                project_id="pay-test-001",
+                feedback_type="too_expensive",
+                comment="",
+            )
+            store.insert_feedback(
+                project_id="pay-test-001",
+                feedback_type="not_clear",
+                comment="needs better docs",
+            )
+            fb = store.list_feedback(project_id="pay-test-001")
+            if len(fb) != 2:
+                raise TestFailure(f"Expected 2 feedback entries, got {len(fb)}")
+            fb_types = {entry["feedback_type"] for entry in fb}
+            if fb_types != {"too_expensive", "not_clear"}:
+                raise TestFailure(f"Unexpected feedback types: {fb_types}")
+
+            store.close()
+        finally:
+            sys.path.pop(0)
+
+
 def main() -> None:
     try:
         compile_check()
@@ -669,6 +904,8 @@ def main() -> None:
         full_dry_run_pipeline()
         monitoring_and_summary_tests()
         negative_guard_tests()
+        payment_and_feedback_tests()
+        payment_tracking_db_tests()
         print("\nAll factory automation tests passed.")
     except TestFailure as exc:
         print(f"\nTEST FAILURE: {exc}", file=sys.stderr)
