@@ -61,9 +61,15 @@ def _merge_ai_copy_into_config(config_str: str, ai_copy_file: str) -> str:
     copy = ai_data.get("ai_copy", {})
     if isinstance(copy, dict):
         for key in ("headline", "subheading", "description", "cta_text",
-                     "short_pitch", "benefit_bullets"):
-            if key in copy and copy[key]:
-                config[key] = copy[key]
+                     "short_pitch"):
+            value = copy.get(key)
+            if isinstance(value, str) and value.strip():
+                config[key] = value.strip()
+        bullets = copy.get("benefit_bullets")
+        if isinstance(bullets, list):
+            coerced = [str(b).strip() for b in bullets if isinstance(b, str) and b.strip()]
+            if coerced:
+                config["benefit_bullets"] = coerced
     return json.dumps(config, indent=2, ensure_ascii=True) + "\n"
 
 

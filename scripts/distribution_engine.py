@@ -154,8 +154,18 @@ def _generate_outreach_targets(brief: dict[str, Any], business_output: dict[str,
 def _generate_monetization_summary(brief: dict[str, Any], business_output: dict[str, Any]) -> dict[str, str]:
     """Generate a ready-to-use monetization summary for distribution."""
     product_name = _required_str(brief, "product_name")
-    model = str(business_output.get("monetization_model", "subscription"))
-    pricing = str(business_output.get("pricing_suggestion", "Contact for pricing"))
+    model = str(
+        business_output.get(
+            "monetization_method",
+            business_output.get("monetization_model", "subscription"),
+        )
+    )
+    pricing = str(
+        business_output.get(
+            "pricing_hint",
+            business_output.get("pricing_suggestion", "Contact for pricing"),
+        )
+    )
     target_user = str(business_output.get("target_user", "Professionals seeking better tools"))
     distribution_plan = str(business_output.get("distribution_plan", ""))
 

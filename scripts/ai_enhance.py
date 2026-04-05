@@ -11,7 +11,7 @@ Generates:
   - benefit bullets
 
 Falls back to deterministic templates when OPENAI_API_KEY is not set,
-marking output as reduced_quality.
+marking output as quality_level="reduced".
 """
 
 from __future__ import annotations

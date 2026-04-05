@@ -122,7 +122,7 @@ When `OPENAI_API_KEY` is set, generates high-quality marketing copy:
 - Short pitch
 - Benefit bullets
 
-Falls back to deterministic templates when API key is missing (marked as `reduced_quality`).
+Falls back to deterministic templates when API key is missing (marked as `reduced`).
 
 ### Phase 6 — Build Injection
 Injects BuildBrief + AI copy into `PRODUCT_BRIEF.md` and `product.config.json`. Atomic writes for safe reruns.
