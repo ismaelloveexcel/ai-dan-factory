@@ -7,8 +7,8 @@ A zero-touch product factory that validates ideas, creates repositories, builds 
 The factory executes a strict pipeline:
 
 ```
-BuildBrief → Validate → Score → Approve → Economics → Control → Queue →
-Create Repo → AI Enhance → Inject → Build → Deploy → Health Check →
+BuildBrief → Validate → Score → Approve → Economics → Control → Repo Discovery →
+Queue → Create Repo → AI Enhance → Inject → Build → Deploy → Health Check →
 Quality Gate → Monitor → Distribute → Track → Learn
 ```
 
@@ -29,6 +29,7 @@ Every decision is deterministic and auditable. AI enhancement via OpenAI generat
 │   ├── scoring_engine.py              # Phase 2: Deterministic scoring (0-10)
 │   ├── build_economics.py             # Phase 3: ROI evaluation before build
 │   ├── build_control.py               # Phase 4: Rate limiting + queue priority
+│   ├── repo_discovery_engine.py       # Phase 4.5: GitHub repo discovery + template selection
 │   ├── create_project.py              # Phase 5: GitHub repo creation from template
 │   ├── ai_enhance.py                  # Phase 5.5: AI-generated marketing copy (OpenAI)
 │   ├── inject_brief.py                # Phase 6: Brief + AI copy injection into product files
@@ -61,7 +62,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `FACTORY_GITHUB_TOKEN` | Yes | PAT with `repo` scope for creating repositories |
+| `FACTORY_GITHUB_TOKEN` | Yes | PAT with `repo` scope for creating repositories and repo discovery |
 | `VERCEL_DEPLOY_HOOK_URL` | Yes | Vercel webhook URL for triggering deployments |
 | `OPENAI_API_KEY` | Recommended | OpenAI key for AI-generated copy (headlines, CTAs, descriptions) |
 | `TEMPLATE_OWNER` | No | Template repo owner (defaults to current repo owner) |
@@ -109,6 +110,31 @@ Rate limiting, queue priority, and duplicate prevention:
 - `MAX_PARALLEL_BUILDS` enforcement
 - Idempotency checking (no duplicate active builds)
 - Priority scoring by revenue score + demand + speed
+
+### Phase 4.5 — Repo Discovery + Template Selection
+Before building from scratch, the factory searches GitHub for relevant starter repos/templates:
+- **Search intent** is derived from the BuildBrief — core fields (product name, problem, solution) plus optional enrichment fields when available (target\_user, product\_type, stack preference, UI keywords)
+- **GitHub Search API** returns candidate repositories ranked by stars
+- **Hard exclusion filters** immediately reject:
+  - Archived repositories
+  - Forks
+  - Stale repositories (no updates in the last 365 days)
+  - Oversized / over-complex repos (>500 MB or >200 open issues)
+  - List-only repositories (awesome-lists, curated resource lists)
+- **Deterministic scoring** evaluates each remaining candidate on six dimensions:
+  - Relevance (0-30): keyword overlap with the build intent
+  - Popularity (0-20): GitHub stars on a log scale
+  - Recency (0-15): freshness of last update
+  - Template suitability (0-15): is\_template flag, template/starter keywords
+  - Tech fit (0-10): programming language match
+  - Simplicity (0-10): low issue count, reasonable repo size
+- **Selection decisions**:
+  - `REUSE_EXTERNAL_TEMPLATE` — best candidate scores ≥ 70; the factory uses this repo as the template source for repo creation instead of the internal template
+  - `USE_INTERNAL_TEMPLATE` — no external repo meets threshold; the factory uses its own internal template (default behavior)
+  - `BUILD_MINIMAL_INTERNAL` — no external repo and no internal template available; builds a minimal project structure
+- **Build path integration**: when `REUSE_EXTERNAL_TEMPLATE` is selected, the create-repo step (Phase 5) overrides its template owner/repo to clone from the selected external template instead of the factory's internal template. This means discovery actually changes the build source.
+- **Fallback safety**: if the GitHub API fails or returns no results, the pipeline continues with the internal template — discovery failures never block builds
+- Uses `FACTORY_GITHUB_TOKEN` for authenticated API calls (same token as repo creation)
 
 ### Phase 5 — Repo Creation
 Idempotent GitHub repo creation from template. Retries on transient errors. Skips if repo already exists.
@@ -195,6 +221,7 @@ GitHub Actions workflows:
  6. Business gate (APPROVE required)
  7. Build economics evaluation
  8. Build control check
+ 8.7. Repo discovery + template selection
  9. Lifecycle → building
 10. Create repository
 11. AI enhancement (generate copy)
@@ -218,7 +245,7 @@ GitHub Actions workflows:
 python3 scripts/run_factory_tests.py
 ```
 
-9-stage test suite:
+10-stage test suite:
 1. Script syntax checks (all scripts)
 2. Payload schema validation
 3. Idea source + scoring tests
@@ -228,6 +255,7 @@ python3 scripts/run_factory_tests.py
 7. Negative guard tests
 8. Quality gate + economics + distribution + control tests
 9. End-to-end pipeline simulation
+10. Repo discovery + template selection tests (scoring, exclusion filters, fixture scenarios, CLI)
 
 ## Monetization Readiness
 
