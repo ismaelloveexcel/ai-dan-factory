@@ -651,7 +651,7 @@ PY
       - name: 18.5) Notify Managing Director
         if: always()
         env:
-          FACTORY_BASE_URL: ${{ env.FACTORY_BASE_URL }}
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
           PROJECT_ID_INPUT: ${{ env.PROJECT_ID_INPUT }}
           RUN_ID: ${{ env.RUN_ID }}
           RESULT_DIR: ${{ env.RESULT_DIR }}
@@ -684,12 +684,18 @@ PY
           PY
           )"
 
+          ERROR_MSG=""
+          if [ "$BUILD_STATUS" = "failed" ]; then
+            ERROR_MSG="factory-build workflow failed; check step logs for details"
+          fi
+
           python scripts/notify_director.py \
             --project-id "${PROJECT_ID_INPUT:-unknown}" \
             --run-id "${RUN_ID:-${{ github.run_id }}}" \
             --status "$BUILD_STATUS" \
             --deploy-url "${DEPLOYMENT_URL:-}" \
             --repo-url "$REPO_URL_VAL" \
+            --error "$ERROR_MSG" \
             --result-file "$RESULT_DIR/notify_director.json" \
             $DRY_RUN_FLAG || true
 
@@ -858,6 +864,8 @@ PY
 
       - name: 20) Emit alert payload on failure
         if: failure()
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
         run: |
           set -euo pipefail
           python scripts/emit_alert.py \
