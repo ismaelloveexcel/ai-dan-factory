@@ -648,6 +648,51 @@ PY
             --state-db "$STATE_DB" \
             --result-file "$RESULT_DIR/portfolio_summary.json"
 
+      - name: 18.5) Notify Managing Director
+        if: always()
+        env:
+          FACTORY_BASE_URL: ${{ env.FACTORY_BASE_URL }}
+          PROJECT_ID_INPUT: ${{ env.PROJECT_ID_INPUT }}
+          RUN_ID: ${{ env.RUN_ID }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+          DEPLOYMENT_URL: ${{ env.DEPLOYMENT_URL }}
+          WORKFLOW_URL: ${{ env.WORKFLOW_URL }}
+        run: |
+          set -euo pipefail
+          case "${{ job.status }}" in
+            success)
+              BUILD_STATUS="succeeded"
+              ;;
+            failure|cancelled|*)
+              BUILD_STATUS="failed"
+              ;;
+          esac
+
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          REPO_URL_VAL="$(python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ.get("RESULT_DIR", ""), "create_repo.json")
+          try:
+              with open(p, "r", encoding="utf-8") as f:
+                  print(json.load(f).get("repo_url", ""))
+          except Exception:
+              print("")
+          PY
+          )"
+
+          python scripts/notify_director.py \
+            --project-id "${PROJECT_ID_INPUT:-unknown}" \
+            --run-id "${RUN_ID:-${{ github.run_id }}}" \
+            --status "$BUILD_STATUS" \
+            --deploy-url "${DEPLOYMENT_URL:-}" \
+            --repo-url "$REPO_URL_VAL" \
+            --result-file "$RESULT_DIR/notify_director.json" \
+            $DRY_RUN_FLAG || true
+
       - name: 19) Finalize factory response
         if: always()
         id: finalize
