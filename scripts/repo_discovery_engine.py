@@ -58,6 +58,14 @@ GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
 # Days after which a repo is considered stale.
 STALE_DAYS = 365
 
+# Maximum repo size (KB) before hard exclusion.  Repos above this are too heavy
+# to be useful one-person starter templates.
+MAX_REPO_SIZE_KB = 500_000  # 500 MB
+
+# Maximum open issues before hard exclusion — signals a complex, high-maintenance
+# project rather than a lean starter.
+MAX_OPEN_ISSUES = 200
+
 # Keywords that indicate a template-oriented repository.
 TEMPLATE_KEYWORDS = frozenset(
     {
@@ -69,6 +77,20 @@ TEMPLATE_KEYWORDS = frozenset(
         "seed",
         "quickstart",
         "kickstart",
+    }
+)
+
+# Keywords that indicate a list-only / curated-list repo (not a starter template).
+LIST_REPO_KEYWORDS = frozenset(
+    {
+        "awesome",
+        "awesome-list",
+        "curated-list",
+        "resource-list",
+        "learning-resources",
+        "cheatsheet",
+        "cheat-sheet",
+        "interview-questions",
     }
 )
 
@@ -87,20 +109,46 @@ class DiscoveryError(Exception):
 
 
 def build_search_query(brief: dict[str, Any]) -> str:
-    """Derive a GitHub search query from the BuildBrief fields."""
+    """Derive a GitHub search query from the BuildBrief fields.
+
+    Uses core fields (solution, product_name, problem) plus optional enrichment
+    fields when available: target_user, product_type, stack/language preference,
+    and UI/landing/dashboard keywords from the brief.
+    """
     parts: list[str] = []
 
     product_name = str(brief.get("product_name", "")).strip()
     solution = str(brief.get("solution", "")).strip()
     problem = str(brief.get("problem", "")).strip()
 
-    # Prefer short, targeted tokens from solution / product_name.
+    # Primary intent from solution / product_name / problem.
     for raw in (solution, product_name, problem):
         tokens = _extract_keywords(raw)
         if tokens:
             parts.extend(tokens[:4])
         if len(parts) >= 6:
             break
+
+    # Enrich with optional BuildBrief fields when present.
+    for field in ("target_user", "product_type"):
+        value = str(brief.get(field, "")).strip()
+        if value:
+            extra = _extract_keywords(value)
+            parts.extend(extra[:2])
+
+    # Stack / language hints.
+    for field in ("preferred_language", "stack", "language"):
+        value = str(brief.get(field, "")).strip()
+        if value and len(value) > 2:
+            parts.append(value)
+            break  # only one stack hint
+
+    # UI / product-shape keywords.
+    for field in ("ui_type", "product_shape"):
+        value = str(brief.get(field, "")).strip()
+        if value:
+            extra = _extract_keywords(value)
+            parts.extend(extra[:2])
 
     # De-duplicate while preserving order.
     seen: set[str] = set()
@@ -206,6 +254,42 @@ def _normalize_repo(item: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Hard exclusion filters
+# ---------------------------------------------------------------------------
+
+
+def _is_stale(repo: dict[str, Any]) -> bool:
+    """Return True if the repo has not been updated within STALE_DAYS."""
+    updated_str = repo.get("updated_at", "")
+    if not updated_str:
+        return True
+    try:
+        updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return True
+    days_ago = max((datetime.now(timezone.utc) - updated).days, 0)
+    return days_ago > STALE_DAYS
+
+
+def _is_oversized(repo: dict[str, Any]) -> bool:
+    """Return True if the repo is too large or has too many open issues."""
+    if repo.get("size", 0) > MAX_REPO_SIZE_KB:
+        return True
+    if repo.get("open_issues_count", 0) > MAX_OPEN_ISSUES:
+        return True
+    return False
+
+
+def _is_list_repo(repo: dict[str, Any]) -> bool:
+    """Return True if the repo appears to be a curated list (e.g. awesome-*)."""
+    name_lower = repo.get("full_name", "").lower()
+    desc_lower = repo.get("description", "").lower()
+    topics = {t.lower() for t in repo.get("topics", [])}
+    text = f"{name_lower} {desc_lower} {' '.join(topics)}"
+    return any(kw in text for kw in LIST_REPO_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
 
@@ -229,6 +313,12 @@ def score_candidate(
     if repo.get("archived"):
         return 0.0
     if repo.get("fork"):
+        return 0.0
+    if _is_stale(repo):
+        return 0.0
+    if _is_oversized(repo):
+        return 0.0
+    if _is_list_repo(repo):
         return 0.0
 
     relevance = _score_relevance(repo, search_query)

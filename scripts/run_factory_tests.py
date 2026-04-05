@@ -1350,6 +1350,195 @@ def repo_discovery_tests() -> None:
         )
         print("  CLI missing-brief failure: OK")
 
+    # --- Fixture tests: hard exclusion filters ---
+
+    # 11. Stale repos (>365 days) are excluded.
+    stale_repo = {
+        "full_name": "user/stale-starter",
+        "description": "A starter template last updated 2 years ago",
+        "stars": 300,
+        "language": "JavaScript",
+        "updated_at": "2022-01-01T00:00:00Z",
+        "topics": ["template", "starter"],
+        "html_url": "https://github.com/user/stale-starter",
+        "is_template": True,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 5,
+        "license": "MIT",
+        "size": 2000,
+    }
+    score_stale = rde.score_candidate(stale_repo, search_query=query)
+    if score_stale != 0.0:
+        raise TestFailure(f"Stale repo should score 0, got {score_stale}")
+    print("  score_candidate (stale=0): OK")
+
+    # 12. Oversized repos are excluded.
+    oversized_repo = {
+        "full_name": "user/mega-monorepo",
+        "description": "Huge monorepo with everything",
+        "stars": 5000,
+        "language": "JavaScript",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "topics": ["template"],
+        "html_url": "https://github.com/user/mega-monorepo",
+        "is_template": False,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 10,
+        "license": "MIT",
+        "size": 600_000,
+    }
+    score_oversized = rde.score_candidate(oversized_repo, search_query=query)
+    if score_oversized != 0.0:
+        raise TestFailure(f"Oversized repo should score 0, got {score_oversized}")
+    print("  score_candidate (oversized=0): OK")
+
+    # 13. List-only repos (awesome-*) are excluded.
+    awesome_repo = {
+        "full_name": "user/awesome-dashboards",
+        "description": "A curated list of dashboard tools and resources",
+        "stars": 8000,
+        "language": "",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "topics": ["awesome", "awesome-list", "dashboard"],
+        "html_url": "https://github.com/user/awesome-dashboards",
+        "is_template": False,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 20,
+        "license": "MIT",
+        "size": 500,
+    }
+    score_awesome = rde.score_candidate(awesome_repo, search_query=query)
+    if score_awesome != 0.0:
+        raise TestFailure(f"List-only repo should score 0, got {score_awesome}")
+    print("  score_candidate (list-repo=0): OK")
+
+    # --- Fixture tests: 3 realistic selection scenarios ---
+
+    # 14. Realistic scenario: good external template selected.
+    #     Simulates a Next.js SaaS dashboard template with strong signals.
+    realistic_external = {
+        "full_name": "vercel/next-saas-starter",
+        "description": "Next.js SaaS starter template with auth, billing, and dashboard",
+        "stars": 4500,
+        "language": "TypeScript",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "topics": ["template", "nextjs", "saas", "starter", "dashboard"],
+        "html_url": "https://github.com/vercel/next-saas-starter",
+        "is_template": True,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 12,
+        "license": "MIT",
+        "size": 8000,
+    }
+    realistic_query = "SaaS dashboard billing template OR starter"
+    sel_realistic = rde.select_template(
+        [realistic_external],
+        search_query=realistic_query,
+        preferred_language="TypeScript",
+    )
+    if sel_realistic["selection_mode"] != rde.MODE_REUSE_EXTERNAL:
+        raise TestFailure(
+            f"Realistic external: expected REUSE_EXTERNAL_TEMPLATE, got {sel_realistic['selection_mode']} "
+            f"(score={sel_realistic['selected_score']})"
+        )
+    if sel_realistic["selected_repo"]["full_name"] != "vercel/next-saas-starter":
+        raise TestFailure(
+            f"Realistic external: expected vercel/next-saas-starter, got {sel_realistic['selected_repo']['full_name']}"
+        )
+    print(f"  fixture: external template selected (score={sel_realistic['selected_score']}): OK")
+
+    # 15. Realistic scenario: candidates exist but are rejected → internal template.
+    mediocre_candidates = [
+        {
+            "full_name": "user/old-dashboard",
+            "description": "A basic dashboard project",
+            "stars": 15,
+            "language": "JavaScript",
+            "updated_at": "2024-06-01T00:00:00Z",
+            "topics": [],
+            "html_url": "https://github.com/user/old-dashboard",
+            "is_template": False,
+            "archived": False,
+            "fork": False,
+            "open_issues_count": 80,
+            "license": "",
+            "size": 150000,
+        },
+        {
+            "full_name": "user/misc-utils",
+            "description": "Random utility functions",
+            "stars": 5,
+            "language": "Python",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "topics": [],
+            "html_url": "https://github.com/user/misc-utils",
+            "is_template": False,
+            "archived": False,
+            "fork": False,
+            "open_issues_count": 30,
+            "license": "",
+            "size": 50000,
+        },
+    ]
+    sel_rejected = rde.select_template(
+        mediocre_candidates,
+        search_query=realistic_query,
+        preferred_language="TypeScript",
+    )
+    if sel_rejected["selection_mode"] != rde.MODE_USE_INTERNAL:
+        raise TestFailure(
+            f"Realistic internal fallback: expected USE_INTERNAL_TEMPLATE, got {sel_rejected['selection_mode']}"
+        )
+    print("  fixture: candidates rejected → USE_INTERNAL_TEMPLATE: OK")
+
+    # 16. Realistic scenario: API failure → empty candidates → safe fallback.
+    #     Simulates by calling select_template with empty list (what main() does on API error).
+    sel_api_fail = rde.select_template(
+        [],
+        search_query=realistic_query,
+        has_internal_template=True,
+    )
+    if sel_api_fail["selection_mode"] != rde.MODE_USE_INTERNAL:
+        raise TestFailure(
+            f"API failure fallback: expected USE_INTERNAL_TEMPLATE, got {sel_api_fail['selection_mode']}"
+        )
+    # Also verify with no internal template → BUILD_MINIMAL_INTERNAL.
+    sel_api_fail_no_tmpl = rde.select_template(
+        [],
+        search_query=realistic_query,
+        has_internal_template=False,
+    )
+    if sel_api_fail_no_tmpl["selection_mode"] != rde.MODE_BUILD_MINIMAL:
+        raise TestFailure(
+            f"API failure (no internal): expected BUILD_MINIMAL_INTERNAL, got {sel_api_fail_no_tmpl['selection_mode']}"
+        )
+    print("  fixture: API failure → safe fallback: OK")
+
+    # --- Enriched search query tests ---
+
+    # 17. build_search_query uses additional fields when present.
+    enriched_brief = {
+        "product_name": "QuickInvoice",
+        "problem": "Freelancers struggle with invoicing",
+        "solution": "Automated invoice generator",
+        "target_user": "freelancers",
+        "product_type": "SaaS tool",
+        "preferred_language": "TypeScript",
+    }
+    enriched_query = rde.build_search_query(enriched_brief)
+    # Should include at least one token from target_user / product_type fields.
+    query_lower = enriched_query.lower()
+    has_enrichment = "freelancer" in query_lower or "saas" in query_lower or "typescript" in query_lower
+    if not has_enrichment:
+        raise TestFailure(
+            f"Enriched query should include target_user/product_type/language tokens: {enriched_query!r}"
+        )
+    print(f"  build_search_query enriched fields: OK ({enriched_query!r})")
+
     print("  Repo discovery tests: ALL PASSED")
 
 

@@ -374,9 +374,49 @@ PY
           )"
           echo "IDEMPOTENCY_KEY=$IDEMPOTENCY_KEY" >> "$GITHUB_ENV"
 
+          # Read repo discovery result — override template source when
+          # an external template was selected.
+          DISCOVERY_FILE="$RESULT_DIR/repo_discovery.json"
+          TMPL_OWNER="${TEMPLATE_OWNER}"
+          TMPL_REPO="${TEMPLATE_REPO}"
+          TEMPLATE_SOURCE="internal"
+          if [ -f "$DISCOVERY_FILE" ]; then
+            DISCOVERY_MODE="$(python - <<'PY'
+import json, os
+p = os.environ.get("DISCOVERY_FILE", "")
+if p and os.path.isfile(p):
+    d = json.load(open(p, "r", encoding="utf-8"))
+    print(d.get("selection_mode", ""))
+else:
+    print("")
+PY
+            )"
+            if [ "$DISCOVERY_MODE" = "REUSE_EXTERNAL_TEMPLATE" ]; then
+              SELECTED_REPO="$(python - <<'PY'
+import json, os
+p = os.environ.get("DISCOVERY_FILE", "")
+if p and os.path.isfile(p):
+    d = json.load(open(p, "r", encoding="utf-8"))
+    print(d.get("selected_repo", ""))
+else:
+    print("")
+PY
+              )"
+              if [ -n "$SELECTED_REPO" ] && echo "$SELECTED_REPO" | grep -q '/'; then
+                TMPL_OWNER="$(echo "$SELECTED_REPO" | cut -d'/' -f1)"
+                TMPL_REPO="$(echo "$SELECTED_REPO" | cut -d'/' -f2)"
+                TEMPLATE_SOURCE="external"
+                echo "::notice::Using external template $SELECTED_REPO from repo discovery"
+              fi
+            fi
+          fi
+          echo "TEMPLATE_SOURCE=$TEMPLATE_SOURCE" >> "$GITHUB_ENV"
+
           python scripts/create_project.py \
             --project-id "$PROJECT_ID_INPUT" \
             --org "${{ github.repository_owner }}" \
+            --template-owner "$TMPL_OWNER" \
+            --template-repo "$TMPL_REPO" \
             --idempotency-key "$IDEMPOTENCY_KEY" \
             --result-file "$RESULT_DIR/create_repo.json" \
             $DRY_RUN_FLAG

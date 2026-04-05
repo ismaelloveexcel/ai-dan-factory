@@ -113,9 +113,15 @@ Rate limiting, queue priority, and duplicate prevention:
 
 ### Phase 4.5 — Repo Discovery + Template Selection
 Before building from scratch, the factory searches GitHub for relevant starter repos/templates:
-- **Search intent** is derived from the BuildBrief (product name, problem, solution keywords)
+- **Search intent** is derived from the BuildBrief — core fields (product name, problem, solution) plus optional enrichment fields when available (target\_user, product\_type, stack preference, UI keywords)
 - **GitHub Search API** returns candidate repositories ranked by stars
-- **Deterministic scoring** evaluates each candidate on six dimensions:
+- **Hard exclusion filters** immediately reject:
+  - Archived repositories
+  - Forks
+  - Stale repositories (no updates in the last 365 days)
+  - Oversized / over-complex repos (>500 MB or >200 open issues)
+  - List-only repositories (awesome-lists, curated resource lists)
+- **Deterministic scoring** evaluates each remaining candidate on six dimensions:
   - Relevance (0-30): keyword overlap with the build intent
   - Popularity (0-20): GitHub stars on a log scale
   - Recency (0-15): freshness of last update
@@ -123,10 +129,11 @@ Before building from scratch, the factory searches GitHub for relevant starter r
   - Tech fit (0-10): programming language match
   - Simplicity (0-10): low issue count, reasonable repo size
 - **Selection decisions**:
-  - `REUSE_EXTERNAL_TEMPLATE` — high-scoring external repo found (score ≥ 70)
-  - `USE_INTERNAL_TEMPLATE` — no external repo meets threshold; use factory template
-  - `BUILD_MINIMAL_INTERNAL` — no external repo and no internal template available
-- **Fallback safety**: if GitHub API fails, the pipeline continues with the internal template
+  - `REUSE_EXTERNAL_TEMPLATE` — best candidate scores ≥ 70; the factory uses this repo as the template source for repo creation instead of the internal template
+  - `USE_INTERNAL_TEMPLATE` — no external repo meets threshold; the factory uses its own internal template (default behavior)
+  - `BUILD_MINIMAL_INTERNAL` — no external repo and no internal template available; builds a minimal project structure
+- **Build path integration**: when `REUSE_EXTERNAL_TEMPLATE` is selected, the create-repo step (Phase 5) overrides its template owner/repo to clone from the selected external template instead of the factory's internal template. This means discovery actually changes the build source.
+- **Fallback safety**: if the GitHub API fails or returns no results, the pipeline continues with the internal template — discovery failures never block builds
 - Uses `FACTORY_GITHUB_TOKEN` for authenticated API calls (same token as repo creation)
 
 ### Phase 5 — Repo Creation
@@ -248,7 +255,7 @@ python3 scripts/run_factory_tests.py
 7. Negative guard tests
 8. Quality gate + economics + distribution + control tests
 9. End-to-end pipeline simulation
-10. Repo discovery + template selection tests
+10. Repo discovery + template selection tests (scoring, exclusion filters, fixture scenarios, CLI)
 
 ## Monetization Readiness
 
