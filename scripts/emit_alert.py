@@ -113,15 +113,24 @@ def main() -> None:
         args.director_base_url.strip()
         or os.environ.get(_DEFAULT_DIRECTOR_BASE_URL_ENV, "").strip()
     )
-    if not director_base_url or args.dry_run:
-        if args.dry_run:
-            log_event(
-                project_id=project_id,
-                step=STEP_NAME,
-                status="webhook_skipped",
-                mode=mode,
-                reason="dry_run",
-            )
+    if not director_base_url:
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="webhook_skipped",
+            mode=mode,
+            reason="no_director_url",
+        )
+        return
+
+    if args.dry_run:
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="webhook_skipped",
+            mode=mode,
+            reason="dry_run",
+        )
         return
 
     try:

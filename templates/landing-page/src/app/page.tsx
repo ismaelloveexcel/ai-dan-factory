@@ -5,14 +5,14 @@ export default function Home() {
       <section className="bg-gradient-to-br from-brand-50 to-white py-24 px-6 text-center">
         <div className="mx-auto max-w-3xl">
           <h1 className="text-5xl font-extrabold text-gray-900 leading-tight mb-6">
-            {{HEADLINE}}
+            {"{{HEADLINE}}"}
           </h1>
-          <p className="text-xl text-gray-600 mb-10">{{SUBHEADLINE}}</p>
+          <p className="text-xl text-gray-600 mb-10">{"{{SUBHEADLINE}}"}</p>
           <a
             href="{{CTA_URL}}"
             className="inline-block bg-brand-600 hover:bg-brand-700 text-white font-semibold text-lg px-8 py-4 rounded-xl shadow-lg transition-colors duration-200"
           >
-            {{CTA_TEXT}}
+            {"{{CTA_TEXT}}"}
           </a>
         </div>
       </section>
@@ -62,17 +62,17 @@ export default function Home() {
           <h2 className="text-3xl font-bold text-gray-900 mb-4">
             Simple, transparent pricing
           </h2>
-          <p className="text-gray-500 mb-10">{{PRICING_MODEL}}</p>
+          <p className="text-gray-500 mb-10">{"{{PRICING_MODEL}}"}</p>
           <div className="bg-white rounded-2xl shadow-lg p-10 border border-gray-100">
             <div className="text-5xl font-extrabold text-brand-600 mb-2">
-              {{PRICE}}
+              {"{{PRICE}}"}
             </div>
-            <p className="text-gray-500 mb-8">{{PRICING_MODEL}}</p>
+            <p className="text-gray-500 mb-8">{"{{PRICING_MODEL}}"}</p>
             <a
               href="{{CTA_URL}}"
               className="block w-full bg-brand-600 hover:bg-brand-700 text-white font-semibold text-lg py-4 rounded-xl shadow transition-colors duration-200"
             >
-              {{CTA_TEXT}}
+              {"{{CTA_TEXT}}"}
             </a>
           </div>
         </div>
@@ -122,7 +122,7 @@ export default function Home() {
             href="{{CTA_URL}}"
             className="inline-block bg-white text-brand-600 font-semibold text-lg px-8 py-4 rounded-xl shadow-lg hover:bg-brand-50 transition-colors duration-200"
           >
-            {{CTA_TEXT}}
+            {"{{CTA_TEXT}}"}
           </a>
         </div>
       </section>

@@ -58,7 +58,13 @@ def _resolve_template_name(cli_template: str, product_config_path: str) -> str:
     3. ``DEFAULT_TEMPLATE`` fallback
     """
     if cli_template.strip():
-        return cli_template.strip()
+        tmpl = cli_template.strip()
+        if tmpl not in VALID_TEMPLATES:
+            valid_list = ", ".join(sorted(VALID_TEMPLATES))
+            raise ApiRequestError(
+                f"Unsupported template {tmpl!r}. Supported templates: {valid_list}"
+            )
+        return tmpl
 
     if product_config_path and os.path.isfile(product_config_path):
         try:

@@ -659,10 +659,14 @@ PY
           WORKFLOW_URL: ${{ env.WORKFLOW_URL }}
         run: |
           set -euo pipefail
-          BUILD_STATUS="succeeded"
-          if [ "${{ job.status }}" = "failure" ]; then
-            BUILD_STATUS="failed"
-          fi
+          case "${{ job.status }}" in
+            success)
+              BUILD_STATUS="succeeded"
+              ;;
+            failure|cancelled|*)
+              BUILD_STATUS="failed"
+              ;;
+          esac
 
           DRY_RUN_FLAG=""
           if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
