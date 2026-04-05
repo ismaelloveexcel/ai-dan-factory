@@ -111,6 +111,7 @@ def compile_check() -> None:
         "scripts/build_economics.py",
         "scripts/distribution_engine.py",
         "scripts/build_control.py",
+        "scripts/ai_enhance.py",
         "scripts/run_factory_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
@@ -702,6 +703,28 @@ def quality_economics_distribution_tests() -> None:
             expect_success=True,
         )
 
+        # Test AI enhancement (dry-run, no API key)
+        ai_copy_result = tmp / "ai_copy.json"
+        run_command(
+            [
+                sys.executable,
+                "scripts/ai_enhance.py",
+                "--brief-file",
+                str(normalized),
+                "--result-file",
+                str(ai_copy_result),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        ai_copy = read_json(ai_copy_result)
+        if ai_copy.get("quality_level") != "reduced":
+            raise TestFailure("ai_enhance dry-run should produce reduced quality level")
+        if not isinstance(ai_copy.get("ai_copy"), dict):
+            raise TestFailure("ai_enhance must produce ai_copy dict")
+
         # Test quality gate
         quality_result = tmp / "quality_gate.json"
         run_command(
@@ -724,8 +747,8 @@ def quality_economics_distribution_tests() -> None:
         )
         quality = read_json(quality_result)
         score = int(quality.get("quality_score", 0))
-        if score < 0 or score > 10:
-            raise TestFailure("quality_gate score must be between 0 and 10")
+        if score < 0 or score > 12:
+            raise TestFailure("quality_gate score must be between 0 and 12")
         if quality.get("quality_decision") not in ("BLOCK", "IMPROVE", "PROCEED"):
             raise TestFailure("quality_gate decision must be BLOCK/IMPROVE/PROCEED")
 
@@ -965,7 +988,23 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
-        # Step 8: Inject brief (dry-run)
+        # Step 8: AI enhance (dry-run)
+        run_command(
+            [
+                sys.executable,
+                "scripts/ai_enhance.py",
+                "--brief-file",
+                str(normalized),
+                "--result-file",
+                str(tmp / "ai_copy.json"),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
+        # Step 9: Inject brief (dry-run)
         run_command(
             [
                 sys.executable,
@@ -983,7 +1022,7 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
-        # Step 9: Generate business output
+        # Step 10: Generate business output
         run_command(
             [
                 sys.executable,
@@ -998,7 +1037,7 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
-        # Step 10: Deploy (dry-run)
+        # Step 11: Deploy (dry-run)
         run_command(
             [
                 sys.executable,
@@ -1012,7 +1051,7 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
-        # Step 11: Health check (dry-run)
+        # Step 12: Health check (dry-run)
         run_command(
             [
                 sys.executable,
@@ -1028,7 +1067,7 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
-        # Step 12: Quality gate
+        # Step 13: Quality gate
         run_command(
             [
                 sys.executable,
@@ -1048,7 +1087,7 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
-        # Step 13: Distribution
+        # Step 14: Distribution
         run_command(
             [
                 sys.executable,
@@ -1087,7 +1126,7 @@ def e2e_simulation_tests() -> None:
             if not path.is_file():
                 raise TestFailure(f"E2E: Missing expected result file: {f}")
 
-        print("  E2E simulation: SUCCESS (all 13 steps completed)")
+        print("  E2E simulation: SUCCESS (all 14 steps completed)")
 
 
 def main() -> None:

@@ -72,6 +72,44 @@ def _gtm_plan(source_type: str) -> list[dict[str, str]]:
     ]
 
 
+def _target_user_from_source(source_type: str) -> str:
+    """Identify primary target user segment based on source type."""
+    user_map = {
+        "TREND": "Tech-savvy early adopters and innovators tracking emerging solutions",
+        "COMPETITOR": "Frustrated users of existing tools seeking a better alternative",
+        "GAP": "Underserved professionals in niche markets with unmet needs",
+        "EXISTING_PRODUCT": "Current users and adjacent product users ready to upgrade",
+    }
+    return user_map.get(source_type, user_map["TREND"])
+
+
+def _distribution_plan(source_type: str, product_name: str) -> str:
+    """Generate a one-paragraph distribution plan summary."""
+    plan_map = {
+        "TREND": (
+            f"Launch {product_name} with a build-in-public campaign on X/Twitter, "
+            f"publish SEO-optimized comparison content, and submit to Product Hunt "
+            f"within the first week. Target tech newsletters for featured placement."
+        ),
+        "COMPETITOR": (
+            f"Position {product_name} as the simpler alternative in competitor forums, "
+            f"run targeted Google Ads on 'alternative to' keywords, and publish "
+            f"migration guides on Reddit and relevant communities."
+        ),
+        "GAP": (
+            f"Launch {product_name} on Product Hunt and BetaList, partner with niche "
+            f"newsletters for early coverage, and build community presence in "
+            f"Discord/Slack groups where the target audience gathers."
+        ),
+        "EXISTING_PRODUCT": (
+            f"Re-engage existing users with {product_name} upgrade campaign, "
+            f"publish LinkedIn thought leadership content, and create demo videos "
+            f"for YouTube targeting B2B decision makers."
+        ),
+    }
+    return plan_map.get(source_type, plan_map["TREND"])
+
+
 def build_business_output(brief: dict[str, Any]) -> dict[str, Any]:
     project_id = _required_str(brief, "project_id").lower()
     product_name = _required_str(brief, "product_name")
@@ -89,6 +127,9 @@ def build_business_output(brief: dict[str, Any]) -> dict[str, Any]:
 
     headline = f"{product_name}: {solution}"
 
+    target_user = _target_user_from_source(source_type)
+    distribution_plan = _distribution_plan(source_type, product_name)
+
     return {
         "project_id": project_id,
         "headline": headline,
@@ -97,6 +138,10 @@ def build_business_output(brief: dict[str, Any]) -> dict[str, Any]:
         "pricing_suggestion": pricing_suggestion,
         "offer_structure": offer_structure,
         "gtm_plan": gtm_plan,
+        "target_user": target_user,
+        "monetization_method": monetization_model,
+        "pricing_hint": pricing_suggestion,
+        "distribution_plan": distribution_plan,
         "conversion_hints": {
             "cta_optimization": f"Use action-first CTA matching buyer intent: '{cta}'.",
             "offer_framing": "Lead with time-to-value and concrete outcome before feature list.",
