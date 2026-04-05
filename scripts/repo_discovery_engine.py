@@ -189,7 +189,7 @@ def search_github(
 
 
 def _normalize_repo(item: dict[str, Any]) -> dict[str, Any]:
-    """Extract and normalise metadata from a GitHub search result item."""
+    """Extract and normalize metadata from a GitHub search result item."""
     return {
         "full_name": str(item.get("full_name", "")),
         "description": str(item.get("description") or ""),
@@ -430,10 +430,10 @@ def main() -> None:
         help="Skip live GitHub API call; simulate empty search results.",
     )
     parser.add_argument(
-        "--has-internal-template",
+        "--no-internal-template",
         action="store_true",
-        default=True,
-        help="Whether the factory has an internal template (default: true).",
+        default=False,
+        help="Indicate that no internal template is available.",
     )
     args = parser.parse_args()
 
@@ -474,7 +474,7 @@ def main() -> None:
             candidates,
             search_query=search_query,
             preferred_language=args.preferred_language,
-            has_internal_template=args.has_internal_template,
+            has_internal_template=not args.no_internal_template,
         )
 
         # Build tracking payload.

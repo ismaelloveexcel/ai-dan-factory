@@ -90,7 +90,7 @@ def read_json(path: Path) -> dict[str, object]:
 
 
 def compile_check() -> None:
-    print("==> [1/9] Running script syntax checks")
+    print("==> [1/10] Running script syntax checks")
     scripts = [
         "scripts/factory_utils.py",
         "scripts/idea_source_engine.py",
@@ -120,7 +120,7 @@ def compile_check() -> None:
 
 
 def payload_schema_check() -> None:
-    print("==> [2/9] Validating test payload schemas")
+    print("==> [2/10] Validating test payload schemas")
     payloads = [LIVE_TEST_BRIEF, AIDAN_DRY_RUN_BRIEF, AIDAN_LIVE_BRIEF]
     required = (
         "project_id",
@@ -155,7 +155,7 @@ def payload_schema_check() -> None:
 
 
 def idea_source_and_scoring_tests() -> None:
-    print("==> [3/9] Running idea source + scoring tests")
+    print("==> [3/10] Running idea source + scoring tests")
     with tempfile.TemporaryDirectory(prefix="factory-idea-source-") as tmp_dir:
         tmp = Path(tmp_dir)
         selected = tmp / "selected.json"
@@ -202,7 +202,7 @@ def idea_source_and_scoring_tests() -> None:
 
 
 def business_gate_and_lifecycle_tests() -> None:
-    print("==> [4/9] Running business gate + lifecycle state tests")
+    print("==> [4/10] Running business gate + lifecycle state tests")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -310,7 +310,7 @@ def business_gate_and_lifecycle_tests() -> None:
 
 
 def full_dry_run_pipeline() -> None:
-    print("==> [5/9] Running happy-path dry-run execution tests")
+    print("==> [5/10] Running happy-path dry-run execution tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-") as tmp_dir:
         tmp = Path(tmp_dir)
         normalized = tmp / "normalized.json"
@@ -428,7 +428,7 @@ def full_dry_run_pipeline() -> None:
 
 
 def monitoring_and_summary_tests() -> None:
-    print("==> [6/9] Running monitor/scale/portfolio tests")
+    print("==> [6/10] Running monitor/scale/portfolio tests")
     with tempfile.TemporaryDirectory(prefix="factory-monitor-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -528,7 +528,7 @@ def monitoring_and_summary_tests() -> None:
 
 
 def negative_guard_tests() -> None:
-    print("==> [7/9] Running negative guard tests")
+    print("==> [7/10] Running negative guard tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-negative-") as tmp_dir:
         tmp = Path(tmp_dir)
         invalid_brief = tmp / "invalid_brief.json"
@@ -668,7 +668,7 @@ def negative_guard_tests() -> None:
 
 
 def quality_economics_distribution_tests() -> None:
-    print("==> [8/9] Running quality gate + build economics + distribution tests")
+    print("==> [8/10] Running quality gate + build economics + distribution tests")
     with tempfile.TemporaryDirectory(prefix="factory-qed-") as tmp_dir:
         tmp = Path(tmp_dir)
 
@@ -835,7 +835,7 @@ def quality_economics_distribution_tests() -> None:
 
 
 def e2e_simulation_tests() -> None:
-    print("==> [9/9] Running end-to-end pipeline simulation")
+    print("==> [9/10] Running end-to-end pipeline simulation")
     with tempfile.TemporaryDirectory(prefix="factory-e2e-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "e2e_state.sqlite"
