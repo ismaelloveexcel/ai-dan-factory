@@ -39,9 +39,6 @@ from factory_utils import log_event, maybe_write_result, utc_timestamp
 
 STEP_NAME = "repo_discovery"
 
-# Minimum composite score to consider a repo for reuse.
-REUSE_THRESHOLD = 60.0
-
 # Minimum composite score for the *best* external candidate to beat the internal
 # template.  If the best external repo scores below this, the factory keeps using
 # its own template.
@@ -57,9 +54,6 @@ MODE_BUILD_MINIMAL = "BUILD_MINIMAL_INTERNAL"
 
 # GitHub Search API base URL.
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
-
-# Retryable HTTP status codes.
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 # Days after which a repo is considered stale.
 STALE_DAYS = 365
@@ -160,8 +154,13 @@ def search_github(
     token: str,
     max_results: int = MAX_CANDIDATES,
     timeout: int = 15,
-) -> list[dict[str, Any]]:
-    """Search GitHub repositories.  Returns normalized metadata dicts."""
+) -> tuple[list[dict[str, Any]], str]:
+    """Search GitHub repositories.
+
+    Returns ``(results, error)`` where *error* is an empty string on success
+    or a description of the failure.  The caller uses *error* to populate
+    ``api_error`` / ``fallback_used`` in the result payload.
+    """
     params = urllib.parse.urlencode(
         {"q": query, "sort": "stars", "order": "desc", "per_page": min(max_results, 100)}
     )
@@ -177,15 +176,14 @@ def search_github(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
             data = json.loads(raw) if raw else {}
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError):
-        # Caller handles failure gracefully.
-        return []
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        return [], str(exc)
 
     items: list[dict[str, Any]] = data.get("items", [])
     results: list[dict[str, Any]] = []
     for item in items[:max_results]:
         results.append(_normalize_repo(item))
-    return results
+    return results, ""
 
 
 def _normalize_repo(item: dict[str, Any]) -> dict[str, Any]:
@@ -305,10 +303,12 @@ def _score_tech_fit(repo: dict[str, Any], preferred_language: str) -> float:
     """0-10 based on language match."""
     if not preferred_language:
         return 5.0  # neutral when no preference
-    repo_lang = (repo.get("language") or "").lower()
+    repo_lang = (repo.get("language") or "").strip().lower()
+    if not repo_lang:
+        return 0.0
     if repo_lang == preferred_language.lower():
         return 10.0
-    return 2.0  # partial credit for having *any* language
+    return 2.0  # partial credit for having any non-matching language
 
 
 def _score_simplicity(repo: dict[str, Any]) -> float:
@@ -377,7 +377,7 @@ def select_template(
         }
 
     if has_internal_template:
-        reason = "No external repo met the reuse threshold"
+        reason = f"No external repo met the preference threshold ({EXTERNAL_PREFERENCE_THRESHOLD})"
         if best:
             reason += (
                 f" (best: '{best['repo']['full_name']}' scored "
@@ -458,9 +458,11 @@ def main() -> None:
         else:
             token = os.environ.get("FACTORY_GITHUB_TOKEN", "").strip() or os.environ.get("GITHUB_TOKEN", "").strip()
             try:
-                candidates = search_github(search_query, token=token)
+                candidates, api_error = search_github(search_query, token=token)
             except Exception as exc:  # noqa: BLE001 — intentional broad catch for resilience
                 api_error = str(exc)
+                candidates = []
+            if api_error:
                 log_event(
                     project_id=project_id,
                     step=STEP_NAME,

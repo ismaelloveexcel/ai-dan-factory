@@ -214,7 +214,7 @@ GitHub Actions workflows:
  6. Business gate (APPROVE required)
  7. Build economics evaluation
  8. Build control check
- 8.5. Repo discovery + template selection
+ 8.7. Repo discovery + template selection
  9. Lifecycle → building
 10. Create repository
 11. AI enhancement (generate copy)
