@@ -25,6 +25,8 @@ from factory_utils import log_event, maybe_write_result
 
 STEP_NAME = "create_repo"
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+VALID_TEMPLATES = {"saas-template", "landing-page"}
+DEFAULT_TEMPLATE = "saas-template"
 
 
 class ApiRequestError(Exception):
@@ -45,6 +47,30 @@ def _resolve_template_defaults() -> tuple[str, str]:
         return owner or fallback_owner, repo or fallback_repo
 
     return owner, repo
+
+
+def _resolve_template_name(cli_template: str, product_config_path: str) -> str:
+    """Return the template name to use.
+
+    Resolution order:
+    1. CLI ``--template`` flag (if provided and non-empty)
+    2. ``template`` field in ``product.config.json`` (if the file exists)
+    3. ``DEFAULT_TEMPLATE`` fallback
+    """
+    if cli_template.strip():
+        return cli_template.strip()
+
+    if product_config_path and os.path.isfile(product_config_path):
+        try:
+            with open(product_config_path, encoding="utf-8") as fh:
+                config = json.load(fh)
+            tmpl = str(config.get("template", "")).strip()
+            if tmpl in VALID_TEMPLATES:
+                return tmpl
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return DEFAULT_TEMPLATE
 
 
 def _github_request(
@@ -179,6 +205,8 @@ def main() -> None:
     parser.add_argument("--org", default="", help="GitHub org/user that will own the repository")
     parser.add_argument("--template-owner", default="", help="Template repository owner")
     parser.add_argument("--template-repo", default="", help="Template repository name")
+    parser.add_argument("--template", default="", help=f"Template name ({', '.join(sorted(VALID_TEMPLATES))}). Overrides product.config.json. Falls back to {DEFAULT_TEMPLATE} when not set.")
+    parser.add_argument("--product-config", default="", help="Path to product.config.json (used to read 'template' field)")
     parser.add_argument("--idempotency-key", default="", help="Idempotency key for deduplication/audit")
     parser.add_argument("--result-file", default="", help="Path to write step result JSON")
     parser.add_argument("--public", action="store_true", help="Create a public repository (default: private)")
@@ -192,7 +220,9 @@ def main() -> None:
     result_file = args.result_file
     idempotency_key = args.idempotency_key.strip()
 
-    log_event(project_id=project_id, step=STEP_NAME, status="started", mode=mode, idempotency_key=idempotency_key)
+    template_name = _resolve_template_name(args.template, args.product_config)
+
+    log_event(project_id=project_id, step=STEP_NAME, status="started", mode=mode, idempotency_key=idempotency_key, template=template_name)
     try:
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", project_id):
             raise ApiRequestError("project_id must be a safe slug: lowercase letters, numbers, hyphens.")
@@ -218,6 +248,7 @@ def main() -> None:
                 "already_exists": False,
                 "created": False,
                 "repo_url": repo_url,
+                "template": template_name,
                 "simulated": True,
             }
             maybe_write_result(result_file, result_payload)
@@ -228,6 +259,7 @@ def main() -> None:
                 mode=mode,
                 idempotency_key=idempotency_key,
                 repo_url=repo_url,
+                template=template_name,
                 simulated=True,
             )
             return
@@ -265,6 +297,7 @@ def main() -> None:
                 "already_exists": True,
                 "created": False,
                 "repo_url": repo_url,
+                "template": template_name,
             }
             maybe_write_result(result_file, result_payload)
             log_event(
@@ -275,6 +308,7 @@ def main() -> None:
                 idempotency_key=idempotency_key,
                 already_exists=True,
                 repo_url=repo_url,
+                template=template_name,
             )
             return
 
@@ -330,6 +364,7 @@ def main() -> None:
             "already_exists": already_exists,
             "created": created,
             "repo_url": repo_url,
+            "template": template_name,
         }
         maybe_write_result(result_file, result_payload)
         log_event(
@@ -341,6 +376,7 @@ def main() -> None:
             already_exists=already_exists,
             created=created,
             repo_url=repo_url,
+            template=template_name,
         )
     except ApiRequestError as exc:
         error_message = str(exc)
