@@ -640,15 +640,7 @@ PY
               $DRY_RUN_FLAG
           fi
 
-      - name: 18) Portfolio simplified summary
-        if: always()
-        run: |
-          set -euo pipefail
-          python scripts/portfolio_summary.py \
-            --state-db "$STATE_DB" \
-            --result-file "$RESULT_DIR/portfolio_summary.json"
-
-      - name: 18.5) Notify Managing Director
+      - name: 17.6) Notify Managing Director
         if: always()
         env:
           FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
@@ -656,17 +648,43 @@ PY
           RUN_ID: ${{ env.RUN_ID }}
           RESULT_DIR: ${{ env.RESULT_DIR }}
           DEPLOYMENT_URL: ${{ env.DEPLOYMENT_URL }}
-          WORKFLOW_URL: ${{ env.WORKFLOW_URL }}
+          RUN_MODE: ${{ env.RUN_MODE }}
         run: |
           set -euo pipefail
-          case "${{ job.status }}" in
-            success)
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          fi
+
+          HEALTH_RESULT="$(python - <<'PY'
+          import json, os, sys
+          run_mode = os.environ.get("RUN_MODE", "")
+          p = os.path.join(os.environ.get("RESULT_DIR", ""), "deploy_health.json")
+          try:
+              with open(p, "r", encoding="utf-8") as f:
+                  health_status = json.load(f).get("health_status", "unknown")
+              build_status = "succeeded" if health_status == "healthy" else "failed"
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"[notify] deploy_health.json read error: {exc}", file=sys.stderr)
+              if run_mode == "tests_only":
+                  health_status = "tests_only"
+                  build_status = "succeeded"
+              else:
+                  health_status = "unknown"
+                  build_status = "use_job_status"
+          print(f"{build_status}:{health_status}")
+          PY
+          )"
+          BUILD_STATUS="${HEALTH_RESULT%%:*}"
+          HEALTH_STATUS_DETAIL="${HEALTH_RESULT#*:}"
+
+          # Fall back to job status when deploy_health.json was not written
+          if [ "$BUILD_STATUS" = "use_job_status" ]; then
+            if [ "${{ job.status }}" = "success" ]; then
               BUILD_STATUS="succeeded"
-              ;;
-            failure|cancelled|*)
+            else
               BUILD_STATUS="failed"
-              ;;
-          esac
+            fi
+          fi
 
           DRY_RUN_FLAG=""
           if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
@@ -674,30 +692,41 @@ PY
           fi
 
           REPO_URL_VAL="$(python - <<'PY'
-          import json, os
+          import json, os, sys
           p = os.path.join(os.environ.get("RESULT_DIR", ""), "create_repo.json")
           try:
               with open(p, "r", encoding="utf-8") as f:
                   print(json.load(f).get("repo_url", ""))
-          except Exception:
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"[notify] create_repo.json read error: {exc}", file=sys.stderr)
               print("")
           PY
           )"
 
-          ERROR_MSG=""
+          NOTIFY_ARGS=(
+            --project-id "${PROJECT_ID_INPUT:-unknown}"
+            --run-id "${RUN_ID:-${{ github.run_id }}}"
+            --status "$BUILD_STATUS"
+            --deploy-url "${DEPLOYMENT_URL:-}"
+            --repo-url "$REPO_URL_VAL"
+            --result-file "$RESULT_DIR/notify_director.json"
+          )
           if [ "$BUILD_STATUS" = "failed" ]; then
-            ERROR_MSG="factory-build workflow failed; check step logs for details"
+            NOTIFY_ARGS+=(--error "Build failed with health_status: ${HEALTH_STATUS_DETAIL}; check deploy_health.json and step logs for details")
+          fi
+          if [ -n "$DRY_RUN_FLAG" ]; then
+            NOTIFY_ARGS+=(--dry-run)
           fi
 
-          python scripts/notify_director.py \
-            --project-id "${PROJECT_ID_INPUT:-unknown}" \
-            --run-id "${RUN_ID:-${{ github.run_id }}}" \
-            --status "$BUILD_STATUS" \
-            --deploy-url "${DEPLOYMENT_URL:-}" \
-            --repo-url "$REPO_URL_VAL" \
-            --error "$ERROR_MSG" \
-            --result-file "$RESULT_DIR/notify_director.json" \
-            $DRY_RUN_FLAG || true
+          python scripts/notify_director.py "${NOTIFY_ARGS[@]}" || true
+
+      - name: 18) Portfolio simplified summary
+        if: always()
+        run: |
+          set -euo pipefail
+          python scripts/portfolio_summary.py \
+            --state-db "$STATE_DB" \
+            --result-file "$RESULT_DIR/portfolio_summary.json"
 
       - name: 19) Finalize factory response
         if: always()
