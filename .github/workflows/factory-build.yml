@@ -648,24 +648,43 @@ PY
           RUN_ID: ${{ env.RUN_ID }}
           RESULT_DIR: ${{ env.RESULT_DIR }}
           DEPLOYMENT_URL: ${{ env.DEPLOYMENT_URL }}
+          RUN_MODE: ${{ env.RUN_MODE }}
         run: |
           set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          fi
 
           HEALTH_RESULT="$(python - <<'PY'
           import json, os, sys
+          run_mode = os.environ.get("RUN_MODE", "")
           p = os.path.join(os.environ.get("RESULT_DIR", ""), "deploy_health.json")
           try:
               with open(p, "r", encoding="utf-8") as f:
                   health_status = json.load(f).get("health_status", "unknown")
+              build_status = "succeeded" if health_status == "healthy" else "failed"
           except (FileNotFoundError, json.JSONDecodeError) as exc:
               print(f"[notify] deploy_health.json read error: {exc}", file=sys.stderr)
-              health_status = "unknown"
-          build_status = "succeeded" if health_status == "healthy" else "failed"
+              if run_mode == "tests_only":
+                  health_status = "tests_only"
+                  build_status = "succeeded"
+              else:
+                  health_status = "unknown"
+                  build_status = "use_job_status"
           print(f"{build_status}:{health_status}")
           PY
           )"
           BUILD_STATUS="${HEALTH_RESULT%%:*}"
           HEALTH_STATUS_DETAIL="${HEALTH_RESULT#*:}"
+
+          # Fall back to job status when deploy_health.json was not written
+          if [ "$BUILD_STATUS" = "use_job_status" ]; then
+            if [ "${{ job.status }}" = "success" ]; then
+              BUILD_STATUS="succeeded"
+            else
+              BUILD_STATUS="failed"
+            fi
+          fi
 
           DRY_RUN_FLAG=""
           if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
