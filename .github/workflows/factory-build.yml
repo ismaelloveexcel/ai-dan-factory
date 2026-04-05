@@ -316,6 +316,23 @@ jobs:
             --project-id "$PROJECT_ID_INPUT" \
             $DRY_RUN_FLAG
 
+      - name: 8.7) Repo discovery and template selection
+        if: env.RUN_MODE != 'tests_only'
+        env:
+          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python scripts/repo_discovery_engine.py \
+            --brief-file "$NORMALIZED_BRIEF_FILE" \
+            --project-id "$PROJECT_ID_INPUT" \
+            --result-file "$RESULT_DIR/repo_discovery.json" \
+            $DRY_RUN_FLAG
+
       - name: 9) Move lifecycle to building
         if: env.RUN_MODE != 'tests_only'
         run: |
@@ -630,6 +647,7 @@ PY
               ("business_gate", result_dir / "business_gate.json"),
               ("build_economics", result_dir / "build_economics.json"),
               ("build_control", result_dir / "build_control.json"),
+              ("repo_discovery", result_dir / "repo_discovery.json"),
               ("create_repo", result_dir / "create_repo.json"),
               ("inject_brief", result_dir / "inject_brief.json"),
               ("business_output", result_dir / "business_output_result.json"),

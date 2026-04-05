@@ -9,6 +9,7 @@ This script validates:
 - lifecycle state transitions
 - monitoring/portfolio outputs
 - key failure guards (validation errors, missing secrets, project mismatch)
+- repo discovery scoring, selection and fallback behavior
 
 No external side effects are performed.
 """
@@ -112,6 +113,7 @@ def compile_check() -> None:
         "scripts/distribution_engine.py",
         "scripts/build_control.py",
         "scripts/ai_enhance.py",
+        "scripts/repo_discovery_engine.py",
         "scripts/run_factory_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
@@ -945,6 +947,22 @@ def e2e_simulation_tests() -> None:
             expect_success=True,
         )
 
+        # Step 5.5: Repo discovery (dry-run)
+        run_command(
+            [
+                sys.executable,
+                "scripts/repo_discovery_engine.py",
+                "--brief-file",
+                str(normalized),
+                "--project-id",
+                "test-001",
+                "--result-file",
+                str(tmp / "discovery.json"),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+
         # Step 6: Lifecycle to building
         run_command(
             [
@@ -1113,6 +1131,7 @@ def e2e_simulation_tests() -> None:
             "gate.json",
             "economics.json",
             "control.json",
+            "discovery.json",
             "create.json",
             "inject.json",
             "bo_result.json",
@@ -1126,7 +1145,212 @@ def e2e_simulation_tests() -> None:
             if not path.is_file():
                 raise TestFailure(f"E2E: Missing expected result file: {f}")
 
-        print("  E2E simulation: SUCCESS (all 14 steps completed)")
+        print("  E2E simulation: SUCCESS (all 15 steps completed)")
+
+
+def repo_discovery_tests() -> None:
+    """Test repo discovery scoring, selection logic, fallback, and CLI."""
+    print("==> [10/10] Running repo discovery + template selection tests")
+
+    # --- Import scoring/selection functions directly for unit tests. --------
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import repo_discovery_engine as rde  # noqa: E402
+
+    # 1. build_search_query produces meaningful queries.
+    brief = {
+        "product_name": "AI Dashboard Builder",
+        "problem": "Users need a simple dashboard for analytics",
+        "solution": "An AI-powered analytics dashboard starter kit",
+    }
+    query = rde.build_search_query(brief)
+    if not query or len(query) < 5:
+        raise TestFailure(f"build_search_query returned empty/short query: {query!r}")
+    if "template" not in query.lower() and "starter" not in query.lower():
+        raise TestFailure(f"build_search_query missing template/starter bias: {query!r}")
+    print(f"  build_search_query OK: {query!r}")
+
+    # 2. score_candidate: archived repos get 0.
+    archived_repo = {
+        "full_name": "user/old-project",
+        "description": "Archived starter",
+        "stars": 500,
+        "language": "JavaScript",
+        "updated_at": "2020-01-01T00:00:00Z",
+        "topics": ["template"],
+        "html_url": "https://github.com/user/old-project",
+        "is_template": True,
+        "archived": True,
+        "fork": False,
+        "open_issues_count": 0,
+        "license": "MIT",
+        "size": 1000,
+    }
+    score_archived = rde.score_candidate(archived_repo, search_query=query)
+    if score_archived != 0.0:
+        raise TestFailure(f"Archived repo should score 0, got {score_archived}")
+    print("  score_candidate (archived=0): OK")
+
+    # 3. score_candidate: forked repos get 0.
+    fork_repo = dict(archived_repo, archived=False, fork=True, full_name="user/forked")
+    score_fork = rde.score_candidate(fork_repo, search_query=query)
+    if score_fork != 0.0:
+        raise TestFailure(f"Forked repo should score 0, got {score_fork}")
+    print("  score_candidate (fork=0): OK")
+
+    # 4. score_candidate: good template scores higher than plain repo.
+    good_template = {
+        "full_name": "user/dashboard-template",
+        "description": "AI-powered analytics dashboard starter kit template",
+        "stars": 200,
+        "language": "JavaScript",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "topics": ["template", "dashboard", "starter"],
+        "html_url": "https://github.com/user/dashboard-template",
+        "is_template": True,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 5,
+        "license": "MIT",
+        "size": 5000,
+    }
+    plain_repo = {
+        "full_name": "user/random-tool",
+        "description": "A utility tool",
+        "stars": 10,
+        "language": "Python",
+        "updated_at": "2023-01-01T00:00:00Z",
+        "topics": [],
+        "html_url": "https://github.com/user/random-tool",
+        "is_template": False,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 50,
+        "license": "",
+        "size": 200000,
+    }
+    score_good = rde.score_candidate(good_template, search_query=query, preferred_language="JavaScript")
+    score_plain = rde.score_candidate(plain_repo, search_query=query, preferred_language="JavaScript")
+    if score_good <= score_plain:
+        raise TestFailure(
+            f"Good template ({score_good}) should outscore plain repo ({score_plain})"
+        )
+    print(f"  score_candidate (good={score_good} > plain={score_plain}): OK")
+
+    # 5. select_template: no candidates → USE_INTERNAL_TEMPLATE.
+    sel_empty = rde.select_template([], search_query=query)
+    if sel_empty["selection_mode"] != rde.MODE_USE_INTERNAL:
+        raise TestFailure(
+            f"Expected USE_INTERNAL_TEMPLATE with empty candidates, got {sel_empty['selection_mode']}"
+        )
+    print("  select_template (no candidates → USE_INTERNAL_TEMPLATE): OK")
+
+    # 6. select_template: no internal template, no candidates → BUILD_MINIMAL_INTERNAL.
+    sel_minimal = rde.select_template([], search_query=query, has_internal_template=False)
+    if sel_minimal["selection_mode"] != rde.MODE_BUILD_MINIMAL:
+        raise TestFailure(
+            f"Expected BUILD_MINIMAL_INTERNAL, got {sel_minimal['selection_mode']}"
+        )
+    print("  select_template (no template → BUILD_MINIMAL_INTERNAL): OK")
+
+    # 7. select_template: high-scoring external repo → REUSE_EXTERNAL_TEMPLATE.
+    #    We need a repo whose score exceeds EXTERNAL_PREFERENCE_THRESHOLD (70).
+    #    Craft one that maxes every dimension.
+    perfect_repo = {
+        "full_name": "org/dashboard-template-starter",
+        "description": "AI-powered analytics dashboard starter kit template boilerplate",
+        "stars": 10000,
+        "language": "JavaScript",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "topics": ["template", "dashboard", "starter", "analytics", "ai"],
+        "html_url": "https://github.com/org/dashboard-template-starter",
+        "is_template": True,
+        "archived": False,
+        "fork": False,
+        "open_issues_count": 2,
+        "license": "MIT",
+        "size": 3000,
+    }
+    score_perfect = rde.score_candidate(perfect_repo, search_query=query, preferred_language="JavaScript")
+    if score_perfect < rde.EXTERNAL_PREFERENCE_THRESHOLD:
+        raise TestFailure(
+            f"Perfect repo scored {score_perfect}, expected >= {rde.EXTERNAL_PREFERENCE_THRESHOLD}"
+        )
+    sel_reuse = rde.select_template(
+        [perfect_repo],
+        search_query=query,
+        preferred_language="JavaScript",
+    )
+    if sel_reuse["selection_mode"] != rde.MODE_REUSE_EXTERNAL:
+        raise TestFailure(
+            f"Expected REUSE_EXTERNAL_TEMPLATE, got {sel_reuse['selection_mode']}"
+        )
+    print(f"  select_template (high-score {score_perfect} → REUSE_EXTERNAL_TEMPLATE): OK")
+
+    # 8. select_template: low-scoring candidates → USE_INTERNAL_TEMPLATE.
+    sel_low = rde.select_template([plain_repo], search_query=query)
+    if sel_low["selection_mode"] != rde.MODE_USE_INTERNAL:
+        raise TestFailure(
+            f"Expected USE_INTERNAL_TEMPLATE for low-score candidates, got {sel_low['selection_mode']}"
+        )
+    print("  select_template (low-score → USE_INTERNAL_TEMPLATE): OK")
+
+    # 9. CLI dry-run produces valid result file.
+    with tempfile.TemporaryDirectory(prefix="factory-discovery-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        result_file = tmp / "discovery.json"
+
+        run_command(
+            [
+                sys.executable,
+                "scripts/repo_discovery_engine.py",
+                "--brief-file",
+                str(LIVE_TEST_BRIEF),
+                "--project-id",
+                "test-001",
+                "--result-file",
+                str(result_file),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        result = read_json(result_file)
+        if result.get("status") != "success":
+            raise TestFailure(f"repo_discovery dry-run did not succeed: {result}")
+        if result.get("selection_mode") not in (
+            rde.MODE_REUSE_EXTERNAL,
+            rde.MODE_USE_INTERNAL,
+            rde.MODE_BUILD_MINIMAL,
+        ):
+            raise TestFailure(f"Invalid selection_mode: {result.get('selection_mode')}")
+        required_keys = {
+            "search_query", "repos_considered", "selection_mode",
+            "selection_reason", "selected_repo", "timestamp",
+        }
+        missing = required_keys - set(result.keys())
+        if missing:
+            raise TestFailure(f"Result missing keys: {missing}")
+        print("  CLI dry-run result: OK")
+
+    # 10. CLI with missing brief file fails gracefully.
+    with tempfile.TemporaryDirectory(prefix="factory-discovery-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        run_command(
+            [
+                sys.executable,
+                "scripts/repo_discovery_engine.py",
+                "--brief-file",
+                str(tmp / "nonexistent.json"),
+                "--project-id",
+                "test-001",
+                "--result-file",
+                str(tmp / "fail.json"),
+                "--dry-run",
+            ],
+            expect_success=False,
+        )
+        print("  CLI missing-brief failure: OK")
+
+    print("  Repo discovery tests: ALL PASSED")
 
 
 def main() -> None:
@@ -1140,6 +1364,7 @@ def main() -> None:
         negative_guard_tests()
         quality_economics_distribution_tests()
         e2e_simulation_tests()
+        repo_discovery_tests()
         print("\nAll factory automation tests passed.")
     except TestFailure as exc:
         print(f"\nTEST FAILURE: {exc}", file=sys.stderr)
