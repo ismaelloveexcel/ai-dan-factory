@@ -893,6 +893,8 @@ PY
 
       - name: 20) Emit alert payload on failure
         if: failure()
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
         run: |
           set -euo pipefail
           python scripts/emit_alert.py \
