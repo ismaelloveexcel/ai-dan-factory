@@ -363,44 +363,44 @@ jobs:
           fi
 
           IDEMPOTENCY_KEY="$(python - <<'PY'
-import json, os
-brief_path = os.environ.get("NORMALIZED_BRIEF_FILE", "")
-if brief_path and os.path.isfile(brief_path):
-    with open(brief_path, "r", encoding="utf-8") as handle:
-        print(json.load(handle).get("idempotency_key", ""))
-else:
-    print("")
-PY
+          import json, os
+          brief_path = os.environ.get("NORMALIZED_BRIEF_FILE", "")
+          if brief_path and os.path.isfile(brief_path):
+              with open(brief_path, "r", encoding="utf-8") as handle:
+                  print(json.load(handle).get("idempotency_key", ""))
+          else:
+              print("")
+          PY
           )"
           echo "IDEMPOTENCY_KEY=$IDEMPOTENCY_KEY" >> "$GITHUB_ENV"
 
           # Read repo discovery result — override template source when
           # an external template was selected.
-          DISCOVERY_FILE="$RESULT_DIR/repo_discovery.json"
+          export DISCOVERY_FILE="$RESULT_DIR/repo_discovery.json"
           TMPL_OWNER="${TEMPLATE_OWNER}"
           TMPL_REPO="${TEMPLATE_REPO}"
           TEMPLATE_SOURCE="internal"
           if [ -f "$DISCOVERY_FILE" ]; then
             DISCOVERY_MODE="$(python - <<'PY'
-import json, os
-p = os.environ.get("DISCOVERY_FILE", "")
-if p and os.path.isfile(p):
-    d = json.load(open(p, "r", encoding="utf-8"))
-    print(d.get("selection_mode", ""))
-else:
-    print("")
-PY
+          import json, os
+          p = os.environ.get("DISCOVERY_FILE", "")
+          if p and os.path.isfile(p):
+              d = json.load(open(p, "r", encoding="utf-8"))
+              print(d.get("selection_mode", ""))
+          else:
+              print("")
+          PY
             )"
             if [ "$DISCOVERY_MODE" = "REUSE_EXTERNAL_TEMPLATE" ]; then
               SELECTED_REPO="$(python - <<'PY'
-import json, os
-p = os.environ.get("DISCOVERY_FILE", "")
-if p and os.path.isfile(p):
-    d = json.load(open(p, "r", encoding="utf-8"))
-    print(d.get("selected_repo", ""))
-else:
-    print("")
-PY
+          import json, os
+          p = os.environ.get("DISCOVERY_FILE", "")
+          if p and os.path.isfile(p):
+              d = json.load(open(p, "r", encoding="utf-8"))
+              print(d.get("selected_repo", ""))
+          else:
+              print("")
+          PY
               )"
               if [ -n "$SELECTED_REPO" ] && echo "$SELECTED_REPO" | grep -q '/'; then
                 TMPL_OWNER="$(echo "$SELECTED_REPO" | cut -d'/' -f1)"
