@@ -96,7 +96,6 @@ jobs:
           set -euo pipefail
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
           BRIEF_FILE="$(mktemp "$RUNNER_TEMP/build-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
-          NORMALIZED_BRIEF_FILE="$(mktemp "$RUNNER_TEMP/normalized-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
           NORMALIZED_INPUTS_FILE="$(mktemp "$RUNNER_TEMP/normalized-inputs-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
           TESTS_ONLY_LOG_FILE="$RESULT_DIR/tests_only.log"
           STATE_DB="data/lifecycle.sqlite"
@@ -109,7 +108,6 @@ jobs:
 
           echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
           echo "BRIEF_FILE=$BRIEF_FILE" >> "$GITHUB_ENV"
-          echo "NORMALIZED_BRIEF_FILE=$NORMALIZED_BRIEF_FILE" >> "$GITHUB_ENV"
           echo "NORMALIZED_INPUTS_FILE=$NORMALIZED_INPUTS_FILE" >> "$GITHUB_ENV"
           echo "TESTS_ONLY_LOG_FILE=$TESTS_ONLY_LOG_FILE" >> "$GITHUB_ENV"
           echo "STATE_DB=$STATE_DB" >> "$GITHUB_ENV"
@@ -196,307 +194,13 @@ jobs:
             exit "$TEST_EXIT"
           fi
 
-      - name: 6) Initialize lifecycle state (idea)
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          python scripts/lifecycle_orchestrator.py \
-            --state-db "$STATE_DB" \
-            --project-id "$PROJECT_ID_INPUT" \
-            --run-id "$RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --to-state idea \
-            --reason "Initialized lifecycle state" \
-            --workflow-url "$WORKFLOW_URL" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
-            > "$RESULT_DIR/lifecycle_idea.json"
-
-      - name: 7) Validate BuildBrief contract
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          python scripts/validate_brief.py \
-            --brief-file "$BRIEF_FILE" \
-            --expected-project-id "$PROJECT_ID_INPUT" \
-            --normalized-output "$NORMALIZED_BRIEF_FILE" \
-            --result-file "$RESULT_DIR/validate_brief.json" \
-            $DRY_RUN_FLAG
-
-      - name: 8) Unified business gate
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          RUN_MODE_VALUE="$RUN_MODE"
-          BRIEF_SOURCE="$NORMALIZED_BRIEF_FILE"
-          if [ ! -s "$BRIEF_SOURCE" ]; then
-            BRIEF_SOURCE="$BRIEF_FILE"
-          fi
-          python scripts/validate_business_gate.py \
-            --brief-file "$BRIEF_SOURCE" \
-            --result-file "$RESULT_DIR/business_gate.json" \
-            --state-db "$STATE_DB" \
-            --workflow-run-id "$RUN_ID" \
-            --workflow-run-attempt "$RUN_ATTEMPT" \
-            --workflow-url "$WORKFLOW_URL" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --run-mode "$RUN_MODE_VALUE"
-
-          DECISION="$(python - <<'PY'
-          import json, os
-          with open(os.path.join(os.environ["RESULT_DIR"], "business_gate.json"), "r", encoding="utf-8") as f:
-              print(json.load(f)["decision"])
-          PY
-          )"
-          SCORE="$(python - <<'PY'
-          import json, os
-          with open(os.path.join(os.environ["RESULT_DIR"], "business_gate.json"), "r", encoding="utf-8") as f:
-              print(json.load(f)["score"])
-          PY
-          )"
-          echo "BUSINESS_DECISION=$DECISION" >> "$GITHUB_ENV"
-          echo "BUSINESS_SCORE=$SCORE" >> "$GITHUB_ENV"
-          if [ "$DECISION" != "APPROVE" ]; then
-            echo "Business gate decision=$DECISION, score=$SCORE. Build/deploy blocked."
-            exit 1
-          fi
-
-      - name: 8.5) Build economics evaluation
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          python scripts/build_economics.py \
-            --brief-file "$NORMALIZED_BRIEF_FILE" \
-            --result-file "$RESULT_DIR/build_economics.json" \
-            --project-id "$PROJECT_ID_INPUT" \
-            $DRY_RUN_FLAG
-
-          if [ "${EFFECTIVE_DRY_RUN}" != "true" ]; then
-            ECONOMICS_DECISION="$(python - <<'PY' "$RESULT_DIR/build_economics.json"
-          import json
-          import sys
-
-          with open(sys.argv[1], "r", encoding="utf-8") as f:
-              data = json.load(f)
-
-          print(data.get("economics_decision", ""))
-          PY
-            )"
-
-            if [ "$ECONOMICS_DECISION" = "HOLD" ]; then
-              echo "Build economics decision is HOLD; pausing pipeline."
-              exit 1
-            fi
-          fi
-
-      - name: 8.6) Build control and rate limiting
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          python scripts/build_control.py \
-            --brief-file "$NORMALIZED_BRIEF_FILE" \
-            --state-db "$STATE_DB" \
-            --business-score "${BUSINESS_SCORE:-0}" \
-            --result-file "$RESULT_DIR/build_control.json" \
-            --project-id "$PROJECT_ID_INPUT" \
-            $DRY_RUN_FLAG
-
-      - name: 8.7) Repo discovery and template selection
+      - name: 6) Execute factory pipeline
         if: env.RUN_MODE != 'tests_only'
         env:
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
           FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          python scripts/repo_discovery_engine.py \
-            --brief-file "$NORMALIZED_BRIEF_FILE" \
-            --project-id "$PROJECT_ID_INPUT" \
-            --result-file "$RESULT_DIR/repo_discovery.json" \
-            $DRY_RUN_FLAG
-
-      - name: 9) Move lifecycle to building
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          python scripts/lifecycle_orchestrator.py \
-            --state-db "$STATE_DB" \
-            --project-id "$PROJECT_ID_INPUT" \
-            --run-id "$RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --to-state building \
-            --reason "Approved idea entered build stage" \
-            --workflow-url "$WORKFLOW_URL" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --metadata-json "{\"score\":$BUSINESS_SCORE}" \
-            > "$RESULT_DIR/lifecycle_building.json"
-
-      - name: 10) Create project repository
-        if: env.RUN_MODE != 'tests_only'
-        env:
-          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
-          TEMPLATE_OWNER: ${{ github.repository_owner }}
-          TEMPLATE_REPO: ${{ github.event.repository.name }}
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          IDEMPOTENCY_KEY="$(python - <<'PY'
-import json, os
-brief_path = os.environ.get("NORMALIZED_BRIEF_FILE", "")
-if brief_path and os.path.isfile(brief_path):
-    with open(brief_path, "r", encoding="utf-8") as handle:
-        print(json.load(handle).get("idempotency_key", ""))
-else:
-    print("")
-PY
-          )"
-          echo "IDEMPOTENCY_KEY=$IDEMPOTENCY_KEY" >> "$GITHUB_ENV"
-
-          # Read repo discovery result — override template source when
-          # an external template was selected.
-          DISCOVERY_FILE="$RESULT_DIR/repo_discovery.json"
-          TMPL_OWNER="${TEMPLATE_OWNER}"
-          TMPL_REPO="${TEMPLATE_REPO}"
-          TEMPLATE_SOURCE="internal"
-          if [ -f "$DISCOVERY_FILE" ]; then
-            DISCOVERY_MODE="$(python - <<'PY'
-import json, os
-p = os.environ.get("DISCOVERY_FILE", "")
-if p and os.path.isfile(p):
-    d = json.load(open(p, "r", encoding="utf-8"))
-    print(d.get("selection_mode", ""))
-else:
-    print("")
-PY
-            )"
-            if [ "$DISCOVERY_MODE" = "REUSE_EXTERNAL_TEMPLATE" ]; then
-              SELECTED_REPO="$(python - <<'PY'
-import json, os
-p = os.environ.get("DISCOVERY_FILE", "")
-if p and os.path.isfile(p):
-    d = json.load(open(p, "r", encoding="utf-8"))
-    print(d.get("selected_repo", ""))
-else:
-    print("")
-PY
-              )"
-              if [ -n "$SELECTED_REPO" ] && echo "$SELECTED_REPO" | grep -q '/'; then
-                TMPL_OWNER="$(echo "$SELECTED_REPO" | cut -d'/' -f1)"
-                TMPL_REPO="$(echo "$SELECTED_REPO" | cut -d'/' -f2)"
-                TEMPLATE_SOURCE="external"
-                echo "::notice::Using external template $SELECTED_REPO from repo discovery"
-              fi
-            fi
-          fi
-          echo "TEMPLATE_SOURCE=$TEMPLATE_SOURCE" >> "$GITHUB_ENV"
-
-          python scripts/create_project.py \
-            --project-id "$PROJECT_ID_INPUT" \
-            --org "${{ github.repository_owner }}" \
-            --template-owner "$TMPL_OWNER" \
-            --template-repo "$TMPL_REPO" \
-            --idempotency-key "$IDEMPOTENCY_KEY" \
-            --result-file "$RESULT_DIR/create_repo.json" \
-            $DRY_RUN_FLAG
-
-      - name: 11) Inject BuildBrief into generated repository
-        if: env.RUN_MODE != 'tests_only'
-        env:
-          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            # Dry-run: inject into factory template dir to simulate the operation
-            python scripts/inject_brief.py \
-              --project-id "$PROJECT_ID_INPUT" \
-              --project-dir "$TEMPLATE_PROJECT_DIR" \
-              --brief-file "$NORMALIZED_BRIEF_FILE" \
-              --idempotency-key "$IDEMPOTENCY_KEY" \
-              --result-file "$RESULT_DIR/inject_brief.json" \
-              --dry-run
-          else
-            # Production: clone the generated repo, inject brief, commit and push
-            REPO_URL="$(python - <<'PY'
-          import json, os
-          p = os.path.join(os.environ["RESULT_DIR"], "create_repo.json")
-          if os.path.isfile(p):
-              data = json.load(open(p, "r", encoding="utf-8"))
-              print(data.get("repo_url", ""))
-          else:
-              print("")
-          PY
-            )"
-
-            if [ -z "$REPO_URL" ]; then
-              echo "::warning::No repo_url found from create_repo step; skipping inject into generated repo."
-              python scripts/inject_brief.py \
-                --project-id "$PROJECT_ID_INPUT" \
-                --project-dir "$TEMPLATE_PROJECT_DIR" \
-                --brief-file "$NORMALIZED_BRIEF_FILE" \
-                --idempotency-key "$IDEMPOTENCY_KEY" \
-                --result-file "$RESULT_DIR/inject_brief.json"
-            else
-              GENERATED_REPO_DIR="$(mktemp -d "$RUNNER_TEMP/generated-repo-${{ github.run_id }}-XXXXXX")"
-              CLONE_URL="$(echo "$REPO_URL" | sed 's|https://|https://x-access-token:'"$GITHUB_TOKEN"'@|')"
-              git clone --depth=1 "$CLONE_URL" "$GENERATED_REPO_DIR"
-
-              python scripts/inject_brief.py \
-                --project-id "$PROJECT_ID_INPUT" \
-                --project-dir "$GENERATED_REPO_DIR" \
-                --brief-file "$NORMALIZED_BRIEF_FILE" \
-                --idempotency-key "$IDEMPOTENCY_KEY" \
-                --result-file "$RESULT_DIR/inject_brief.json"
-
-              git -C "$GENERATED_REPO_DIR" config user.email "factory-bot@users.noreply.github.com"
-              git -C "$GENERATED_REPO_DIR" config user.name "Factory Bot"
-              git -C "$GENERATED_REPO_DIR" add PRODUCT_BRIEF.md product.config.json
-              if ! git -C "$GENERATED_REPO_DIR" diff --cached --quiet; then
-                git -C "$GENERATED_REPO_DIR" commit -m "chore: inject product brief for $PROJECT_ID_INPUT"
-                git -C "$GENERATED_REPO_DIR" push
-              fi
-            fi
-          fi
-
-      - name: 12) Generate business output
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          python scripts/business_output_engine.py \
-            --brief-file "$NORMALIZED_BRIEF_FILE" \
-            --output-file "$RESULT_DIR/business_output.json" \
-            --result-file "$RESULT_DIR/business_output_result.json"
-
-      - name: 13) Trigger deployment
-        if: env.RUN_MODE != 'tests_only'
-        env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
         run: |
           set -euo pipefail
           DRY_RUN_FLAG=""
@@ -504,141 +208,46 @@ PY
             DRY_RUN_FLAG="--dry-run"
           fi
 
-          python scripts/deploy.py \
+          python scripts/factory_orchestrator.py \
+            --brief-file "$BRIEF_FILE" \
             --project-id "$PROJECT_ID_INPUT" \
-            --idempotency-key "$IDEMPOTENCY_KEY" \
-            --result-file "$RESULT_DIR/deploy.json" \
-            $DRY_RUN_FLAG
-
-      - name: 14) Deployment health check
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          DEPLOYMENT_URL="$(python - <<'PY'
-          import json, os
-          p = os.path.join(os.environ["RESULT_DIR"], "deploy.json")
-          if not os.path.isfile(p):
-              print("")
-          else:
-              with open(p, "r", encoding="utf-8") as f:
-                  print(json.load(f).get("deployment_url", ""))
-          PY
-          )"
-          echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          python scripts/deploy_health_check.py \
-            --project-id "$PROJECT_ID_INPUT" \
-            --deployment-url "$DEPLOYMENT_URL" \
-            --result-file "$RESULT_DIR/deploy_health.json" \
-            $DRY_RUN_FLAG
-
-          HEALTH_STATUS="$(python - <<'PY'
-          import json, os
-          p = os.path.join(os.environ["RESULT_DIR"], "deploy_health.json")
-          if os.path.isfile(p):
-              with open(p, "r", encoding="utf-8") as f:
-                  print(json.load(f).get("health_status", "unknown"))
-          else:
-              print("unknown")
-          PY
-          )"
-          echo "HEALTH_STATUS=$HEALTH_STATUS" >> "$GITHUB_ENV"
-
-      - name: 14.5) Product quality gate
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          BUSINESS_OUTPUT_FILE="$RESULT_DIR/business_output.json"
-          BO_FLAG=""
-          if [ -f "$BUSINESS_OUTPUT_FILE" ]; then
-            BO_FLAG="--business-output-file $BUSINESS_OUTPUT_FILE"
-          fi
-
-          python scripts/quality_gate.py \
-            --brief-file "$NORMALIZED_BRIEF_FILE" \
-            $BO_FLAG \
-            --health-status "${HEALTH_STATUS:-unknown}" \
-            --result-file "$RESULT_DIR/quality_gate.json" \
-            --project-id "$PROJECT_ID_INPUT" \
-            $DRY_RUN_FLAG
-
-      - name: 15) Move lifecycle to deployed
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          python scripts/lifecycle_orchestrator.py \
             --state-db "$STATE_DB" \
-            --project-id "$PROJECT_ID_INPUT" \
+            --result-dir "$RESULT_DIR" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT" \
-            --to-state deployed \
-            --reason "Build completed and deployment triggered" \
             --workflow-url "$WORKFLOW_URL" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
-            > "$RESULT_DIR/lifecycle_deployed.json"
-
-      - name: 16) Move lifecycle to monitored
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          python scripts/lifecycle_orchestrator.py \
-            --state-db "$STATE_DB" \
-            --project-id "$PROJECT_ID_INPUT" \
-            --run-id "$RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --to-state monitored \
-            --reason "Deployment entered monitoring stage" \
-            --workflow-url "$WORKFLOW_URL" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --metadata-json "{\"workflow_url\":\"$WORKFLOW_URL\"}" \
-            > "$RESULT_DIR/lifecycle_monitored.json"
-
-      - name: 17) Monitor and decide scale/kill
-        if: env.RUN_MODE != 'tests_only'
-        run: |
-          set -euo pipefail
-          python scripts/monitor_and_decide.py \
-            --state-db "$STATE_DB" \
-            --run-id "$RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --project-id "$PROJECT_ID_INPUT" \
+            --template-owner "${{ github.repository_owner }}" \
+            --template-repo "${{ github.event.repository.name }}" \
+            --repo-org "${{ github.repository_owner }}" \
             --traffic-signal "${{ inputs.traffic_signal }}" \
             --activation-metric "${{ inputs.activation_metric }}" \
             --revenue-signal-status "${{ inputs.revenue_signal_status }}" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --result-file "$RESULT_DIR/monitoring_decision.json"
+            --result-file "$RESULT_DIR/factory-response.json" \
+            $DRY_RUN_FLAG
 
-      - name: 17.5) Distribution execution
-        if: env.RUN_MODE != 'tests_only'
+      - name: 7) Read orchestrator outputs
+        if: always()
         run: |
           set -euo pipefail
-          DRY_RUN_FLAG=""
-          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+          from pathlib import Path
 
-          BUSINESS_OUTPUT_FILE="$RESULT_DIR/business_output.json"
-          if [ ! -f "$BUSINESS_OUTPUT_FILE" ]; then
-            echo "::warning::No business_output.json found; skipping distribution."
-          else
-            python scripts/distribution_engine.py \
-              --brief-file "$NORMALIZED_BRIEF_FILE" \
-              --business-output-file "$BUSINESS_OUTPUT_FILE" \
-              --deployment-url "${DEPLOYMENT_URL:-}" \
-              --result-file "$RESULT_DIR/distribution.json" \
-              --project-id "$PROJECT_ID_INPUT" \
-              $DRY_RUN_FLAG
-          fi
+          result_dir = os.environ.get("RESULT_DIR", "")
+          if not result_dir:
+              print("DEPLOYMENT_URL=")
+          else:
+              p = Path(result_dir) / "factory-response.json"
+              if p.is_file():
+                  try:
+                      data = json.loads(p.read_text(encoding="utf-8"))
+                      print(f"DEPLOYMENT_URL={data.get('deployment_url', '')}")
+                  except (json.JSONDecodeError, OSError):
+                      print("DEPLOYMENT_URL=")
+              else:
+                  print("DEPLOYMENT_URL=")
+          PY
 
       - name: 17.6) Notify Managing Director
         if: always()
@@ -653,6 +262,7 @@ PY
           set -euo pipefail
           if [ -z "${RESULT_DIR:-}" ]; then
             RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+            mkdir -p "$RESULT_DIR"
           fi
 
           HEALTH_RESULT="$(python - <<'PY'
@@ -724,9 +334,13 @@ PY
         if: always()
         run: |
           set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+            mkdir -p "$RESULT_DIR"
+          fi
           python scripts/portfolio_summary.py \
             --state-db "$STATE_DB" \
-            --result-file "$RESULT_DIR/portfolio_summary.json"
+            --result-file "$RESULT_DIR/portfolio_summary.json" || true
 
       - name: 19) Finalize factory response
         if: always()
@@ -746,11 +360,16 @@ PY
           set -euo pipefail
           if [ -z "${RESULT_DIR:-}" ]; then
             RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+            mkdir -p "$RESULT_DIR"
           fi
           echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
 
           RESPONSE_FILE="$RESULT_DIR/factory-response.json"
-          python - <<'PY'
+
+          # If the orchestrator did not write factory-response.json (tests_only
+          # or early failure), assemble a minimal response from available step files.
+          if [ ! -f "$RESPONSE_FILE" ]; then
+            python - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -763,99 +382,57 @@ PY
           step_files = [
               ("normalize_inputs", result_dir / "normalize_inputs.json"),
               ("automated_tests_only", result_dir / "automated_tests_only.json"),
-              ("validate_brief", result_dir / "validate_brief.json"),
-              ("business_gate", result_dir / "business_gate.json"),
-              ("build_economics", result_dir / "build_economics.json"),
-              ("build_control", result_dir / "build_control.json"),
-              ("repo_discovery", result_dir / "repo_discovery.json"),
-              ("create_repo", result_dir / "create_repo.json"),
-              ("inject_brief", result_dir / "inject_brief.json"),
-              ("business_output", result_dir / "business_output_result.json"),
-              ("deploy", result_dir / "deploy.json"),
-              ("deploy_health", result_dir / "deploy_health.json"),
-              ("quality_gate", result_dir / "quality_gate.json"),
-              ("monitoring_decision", result_dir / "monitoring_decision.json"),
-              ("distribution", result_dir / "distribution.json"),
           ]
 
           steps = []
           overall_status = "failed" if os.environ.get("JOB_STATUS") == "failure" else "success"
-          repo_url = ""
-          deployment_status = "not_applicable" if run_mode == "tests_only" else "not_started"
-          deployment_url = ""
-          idempotency_key = ""
-          failure_reason = ""
           errors = []
-          kill_candidate = False
-          optimize_candidate = False
-          scale_candidate = False
 
           for step_name, step_path in step_files:
               if step_path.exists():
                   data = json.loads(step_path.read_text(encoding="utf-8"))
               else:
-                  data = {
-                      "project_id": project_id,
-                      "step": step_name,
-                      "status": "skipped",
-                      "mode": run_mode if run_mode else "unknown",
-                  }
+                  data = {"project_id": project_id, "step": step_name,
+                          "status": "skipped", "mode": run_mode}
               steps.append(data)
               if data.get("status") == "failed":
                   overall_status = "failed"
-                  err = str(data.get("error", "")).strip() or str(data.get("reason", "")).strip()
+                  err = str(data.get("error", "")).strip()
                   if err:
                       errors.append(f"{step_name}: {err}")
-              if not idempotency_key:
-                  candidate = str(data.get("idempotency_key", "")).strip()
-                  if candidate:
-                      idempotency_key = candidate
-              if step_name == "create_repo":
-                  repo_url = str(data.get("repo_url", repo_url))
-              if step_name == "deploy":
-                  deployment_status = str(data.get("deployment_status", data.get("status", deployment_status)))
-                  deployment_url = str(data.get("deployment_url", deployment_url))
-              if step_name == "business_gate" and data.get("decision") != "APPROVE":
-                  failure_reason = str(data.get("reason", "")).strip() or "Business gate decision was not APPROVE."
-              if step_name == "monitoring_decision":
-                  kill_candidate = bool(data.get("kill_candidate", False))
-                  optimize_candidate = bool(data.get("optimize_candidate", False))
-                  scale_candidate = bool(data.get("scale_candidate", False))
-
-          error_summary = "; ".join(errors) if errors else ""
-          if overall_status == "failed" and not failure_reason:
-              failure_reason = error_summary or "Workflow failed before detailed reason was captured."
 
           response = {
+              "contract_version": "v1",
               "project_id": project_id,
               "run_id": os.environ.get("RUN_ID", ""),
               "run_attempt": os.environ.get("RUN_ATTEMPT", ""),
               "workflow_url": os.environ.get("WORKFLOW_URL", ""),
               "timestamp_utc": os.environ.get("TIMESTAMP_UTC", ""),
-              "repo_url": repo_url,
-              "deployment_url": deployment_url,
+              "repo_url": "",
+              "deployment_url": "",
               "status": overall_status,
               "run_mode": run_mode,
-              "idempotency_key": idempotency_key,
+              "idempotency_key": "",
               "steps": steps,
-              "deployment": {
-                  "status": deployment_status,
-                  "url": deployment_url,
-              },
-              "error_summary": error_summary,
-              "failure_reason": failure_reason,
-              "kill_candidate": kill_candidate,
-              "optimize_candidate": optimize_candidate,
-              "scale_candidate": scale_candidate,
+              "deployment": {"status": "not_applicable", "url": ""},
+              "quality_result": {},
+              "error_summary": "; ".join(errors),
+              "failure_reason": "; ".join(errors) if errors else "",
+              "kill_candidate": False,
+              "optimize_candidate": False,
+              "scale_candidate": False,
               "result_artifact": {
                   "name": os.environ.get("RESULT_ARTIFACT_NAME", ""),
                   "path": "factory-response.json",
               },
           }
-          response_file = result_dir / "factory-response.json"
-          response_file.write_text(json.dumps(response, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+          response_path = result_dir / "factory-response.json"
+          response_path.write_text(
+              json.dumps(response, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+          )
           print(json.dumps(response, ensure_ascii=True))
           PY
+          fi
 
           echo "factory_response<<EOF" >> "$GITHUB_OUTPUT"
           cat "$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
@@ -878,6 +455,7 @@ PY
               f"REPO: {response.get('repo_url', 'not-created')}",
               f"DEPLOYMENT: {response.get('deployment_url', 'not-available')}",
               f"IDEMPOTENCY KEY: {response.get('idempotency_key', 'not-available')}",
+              f"CONTRACT VERSION: {response.get('contract_version', 'v1')}",
               f"ERROR SUMMARY: {response.get('error_summary', 'none') or 'none'}",
               f"FAILURE REASON: {response.get('failure_reason', 'none') or 'none'}",
               f"KILL CANDIDATE: {response.get('kill_candidate', False)}",

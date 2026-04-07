@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-Evaluate project signals and emit kill/optimize/scale candidates.
+Evaluate project execution signals and emit portfolio disposition recommendations.
+
+This script produces execution-plane signals (kill_candidate, optimize_candidate,
+scale_candidate) that the AI-DAN control plane (Repo 1) can use to inform
+its business lifecycle decisions.  Final business decisions remain with the
+control plane operator — this script only surfaces signal-based recommendations
+based on observed traffic, activation, and revenue data.
 """
 
 from __future__ import annotations
