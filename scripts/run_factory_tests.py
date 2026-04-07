@@ -114,6 +114,7 @@ def compile_check() -> None:
         "scripts/build_control.py",
         "scripts/ai_enhance.py",
         "scripts/repo_discovery_engine.py",
+        "scripts/factory_orchestrator.py",
         "scripts/run_factory_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
@@ -1542,6 +1543,51 @@ def repo_discovery_tests() -> None:
     print("  Repo discovery tests: ALL PASSED")
 
 
+def orchestrator_tests() -> None:
+    """Test that factory_orchestrator module is importable and its CLI handles dry-run."""
+    print("==> [11/11] Running factory orchestrator tests")
+
+    # 1. Import check — verify the module exposes the expected contract constants.
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import factory_orchestrator as fo  # noqa: E402
+
+    # Contract constant checks
+    for field in fo.BUILD_BRIEF_V1_REQUIRED_FIELDS:
+        if not isinstance(field, str) or not field.strip():
+            raise TestFailure(f"BUILD_BRIEF_V1_REQUIRED_FIELDS contains invalid entry: {field!r}")
+    if "project_id" not in fo.BUILD_BRIEF_V1_REQUIRED_FIELDS:
+        raise TestFailure("BUILD_BRIEF_V1_REQUIRED_FIELDS missing 'project_id'")
+    if "product_name" not in fo.BUILD_BRIEF_V1_REQUIRED_FIELDS:
+        raise TestFailure("BUILD_BRIEF_V1_REQUIRED_FIELDS missing 'product_name'")
+
+    for key in fo.FACTORY_RUN_RESULT_V1_KEYS:
+        if not isinstance(key, str) or not key.strip():
+            raise TestFailure(f"FACTORY_RUN_RESULT_V1_KEYS contains invalid entry: {key!r}")
+    for required_key in ("project_id", "status", "run_mode", "steps", "deployment"):
+        if required_key not in fo.FACTORY_RUN_RESULT_V1_KEYS:
+            raise TestFailure(f"FACTORY_RUN_RESULT_V1_KEYS missing '{required_key}'")
+    print("  contract constants: OK")
+
+    # 2. CLI dry-run: missing brief file should exit non-zero gracefully.
+    with tempfile.TemporaryDirectory(prefix="factory-orchestrator-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        run_command(
+            [
+                sys.executable,
+                "scripts/factory_orchestrator.py",
+                "--brief-file",
+                str(tmp / "nonexistent.json"),
+                "--project-id",
+                "test-001",
+                "--dry-run",
+            ],
+            expect_success=False,
+        )
+    print("  CLI missing-brief exit: OK")
+
+    print("  Orchestrator tests: ALL PASSED")
+
+
 def main() -> None:
     try:
         compile_check()
@@ -1554,6 +1600,7 @@ def main() -> None:
         quality_economics_distribution_tests()
         e2e_simulation_tests()
         repo_discovery_tests()
+        orchestrator_tests()
         print("\nAll factory automation tests passed.")
     except TestFailure as exc:
         print(f"\nTEST FAILURE: {exc}", file=sys.stderr)
