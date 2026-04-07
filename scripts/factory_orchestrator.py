@@ -2,15 +2,19 @@
 """
 Factory Orchestrator — execution plane entry point for AI-DAN factory builds.
 
-Defines BuildBrief v1 and FactoryRunResult v1 contracts and coordinates three
-deterministic execution stages:
+This repo is the *execution plane*.  It receives BuildBrief v1 payloads, runs
+deterministic pipeline stages, and returns FactoryRunResult v1 payloads.
+Business and project-level truth lives in the AI-DAN control plane (Repo 1).
 
-  input_stage  → validate brief, normalize inputs, run business/economics gates
+Three execution stages:
+  input_stage  → validate brief, run business/economics gates, repo discovery
   build_stage  → create repo, inject brief, generate business output
   deploy_stage → trigger deployment, health-check, quality gate, monitor, distribute
 
-Each stage calls the corresponding leaf scripts as subprocesses so that stage
-logic remains auditable in isolation and individual scripts stay reusable.
+Each stage calls leaf scripts as subprocesses so stage logic stays auditable
+in isolation and individual scripts remain independently testable.
+
+Contract definitions live in factory_run_contract.py.
 
 Usage (CLI):
     python scripts/factory_orchestrator.py \\
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -39,58 +44,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from factory_utils import log_event, maybe_write_result, write_json
-
-# ---------------------------------------------------------------------------
-# Contract constants
-# ---------------------------------------------------------------------------
-
-# BuildBrief v1 — required fields validated by validate_brief.py
-BUILD_BRIEF_V1_REQUIRED_FIELDS: tuple[str, ...] = (
-    "project_id",
-    "product_name",
-    "problem",
-    "solution",
-    "cta",
-    "source_type",
-    "reference_context",
-    "demand_level",
-    "monetization_proof",
-    "market_saturation",
-    "differentiation",
+from factory_run_contract import (
+    BUILD_BRIEF_V1_OPTIONAL_FIELDS,
+    BUILD_BRIEF_V1_REQUIRED_FIELDS,
+    CONTRACT_VERSION,
+    FACTORY_RUN_RESULT_V1_KEYS,
 )
+from factory_utils import log_event, maybe_write_result
 
-# BuildBrief v1 — optional enrichment fields
-BUILD_BRIEF_V1_OPTIONAL_FIELDS: tuple[str, ...] = (
-    "build_complexity",
-    "speed_to_revenue",
-    "target_user",
-    "product_type",
-    "preferred_language",
-    "idempotency_key",
-)
-
-# FactoryRunResult v1 — top-level keys emitted in the result JSON
-FACTORY_RUN_RESULT_V1_KEYS: tuple[str, ...] = (
-    "project_id",
-    "run_id",
-    "run_attempt",
-    "workflow_url",
-    "timestamp_utc",
-    "repo_url",
-    "deployment_url",
-    "status",
-    "run_mode",
-    "idempotency_key",
-    "steps",
-    "deployment",
-    "error_summary",
-    "failure_reason",
-    "kill_candidate",
-    "optimize_candidate",
-    "scale_candidate",
-    "result_artifact",
-)
+# Re-export contract constants so existing importers of this module keep working
+__all__ = [
+    "BUILD_BRIEF_V1_OPTIONAL_FIELDS",
+    "BUILD_BRIEF_V1_REQUIRED_FIELDS",
+    "CONTRACT_VERSION",
+    "FACTORY_RUN_RESULT_V1_KEYS",
+    "OrchestratorError",
+    "input_stage",
+    "build_stage",
+    "deploy_stage",
+    "run_pipeline",
+]
 
 STEP_NAME = "factory_orchestrator"
 
@@ -365,20 +338,93 @@ def build_stage(
     stage_results["create_repo"] = create_data
     repo_url = str(create_data.get("repo_url", ""))
 
-    # 3) Inject BuildBrief into generated repo (dry-run targets local template dir)
+    # 3) Inject BuildBrief into generated repository
     inject_result = result_dir / "inject_brief.json"
     template_project_dir = str(Path("templates") / "saas-template")
-    _run_script(
-        [
-            py, "scripts/inject_brief.py",
-            "--project-id", project_id,
-            "--project-dir", template_project_dir,
-            "--brief-file", str(normalized_brief_file),
-            "--idempotency-key", idempotency_key,
-            "--result-file", str(inject_result),
-        ] + dry_flag,
-        step="inject_brief",
-    )
+    if dry_run:
+        # dry-run: inject into local template dir to simulate the operation
+        _run_script(
+            [
+                py, "scripts/inject_brief.py",
+                "--project-id", project_id,
+                "--project-dir", template_project_dir,
+                "--brief-file", str(normalized_brief_file),
+                "--idempotency-key", idempotency_key,
+                "--result-file", str(inject_result),
+                "--dry-run",
+            ],
+            step="inject_brief",
+        )
+    else:
+        # production: clone generated repo, inject brief, commit and push
+        github_token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("FACTORY_GITHUB_TOKEN", "")).strip()
+        if repo_url and github_token:
+            with tempfile.TemporaryDirectory(prefix=f"factory-inject-{project_id}-") as _inject_tmp:
+                generated_repo_dir = Path(_inject_tmp)
+                clone_url = repo_url.replace("https://", f"https://x-access-token:{github_token}@")
+                _run_script(
+                    ["git", "clone", "--depth=1", clone_url, str(generated_repo_dir)],
+                    step="git_clone",
+                )
+                _run_script(
+                    [
+                        py, "scripts/inject_brief.py",
+                        "--project-id", project_id,
+                        "--project-dir", str(generated_repo_dir),
+                        "--brief-file", str(normalized_brief_file),
+                        "--idempotency-key", idempotency_key,
+                        "--result-file", str(inject_result),
+                    ],
+                    step="inject_brief",
+                )
+                _run_script(
+                    ["git", "-C", str(generated_repo_dir), "config",
+                     "user.email", "factory-bot@users.noreply.github.com"],
+                    step="git_config_email",
+                )
+                _run_script(
+                    ["git", "-C", str(generated_repo_dir), "config", "user.name", "Factory Bot"],
+                    step="git_config_name",
+                )
+                _run_script(
+                    ["git", "-C", str(generated_repo_dir), "add",
+                     "PRODUCT_BRIEF.md", "product.config.json"],
+                    step="git_add",
+                )
+                # only commit and push if there are staged changes
+                diff_check = subprocess.run(
+                    ["git", "-C", str(generated_repo_dir), "diff", "--cached", "--quiet"],
+                    capture_output=True,
+                )
+                if diff_check.returncode != 0:
+                    _run_script(
+                        ["git", "-C", str(generated_repo_dir), "commit",
+                         "-m", f"chore: inject product brief for {project_id}"],
+                        step="git_commit",
+                    )
+                    _run_script(
+                        ["git", "-C", str(generated_repo_dir), "push"],
+                        step="git_push",
+                    )
+        else:
+            # fallback: no repo_url or no token — inject into template dir
+            print(
+                f"::warning::No repo_url or GITHUB_TOKEN for inject; "
+                "falling back to template dir.",
+                file=sys.stderr,
+                flush=True,
+            )
+            _run_script(
+                [
+                    py, "scripts/inject_brief.py",
+                    "--project-id", project_id,
+                    "--project-dir", template_project_dir,
+                    "--brief-file", str(normalized_brief_file),
+                    "--idempotency-key", idempotency_key,
+                    "--result-file", str(inject_result),
+                ],
+                step="inject_brief",
+            )
     stage_results["inject_brief"] = _read_json_safe(inject_result)
 
     # 4) Generate business output
@@ -738,7 +784,18 @@ def run_pipeline(
     if overall_status == "failed" and not failure_reason:
         failure_reason = error_summary or "Pipeline failed before detailed reason was captured."
 
+    # Extract quality_result as a top-level field for easier consumption by Repo 1
+    quality_result: dict[str, Any] = {}
+    for step_data in all_steps:
+        if isinstance(step_data, dict) and step_data.get("step") == "quality_gate":
+            quality_result = step_data
+            break
+    if not quality_result:
+        # Try reading directly from result_dir
+        quality_result = _read_json_safe(result_dir / "quality_gate.json")
+
     result: dict[str, Any] = {
+        "contract_version": CONTRACT_VERSION,
         "project_id": project_id,
         "run_id": run_id,
         "run_attempt": run_attempt,
@@ -754,6 +811,7 @@ def run_pipeline(
             "status": deployment_status,
             "url": deployment_url,
         },
+        "quality_result": quality_result,
         "error_summary": error_summary,
         "failure_reason": failure_reason,
         "kill_candidate": kill_candidate,
@@ -765,7 +823,14 @@ def run_pipeline(
         },
     }
 
-    if result_file:
+    # Always write factory-response.json to result_dir so the workflow can
+    # upload it even when result_file is not explicitly provided.
+    response_path = result_dir / "factory-response.json"
+    response_path.write_text(
+        json.dumps(result, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
+
+    if result_file and Path(result_file).resolve() != response_path.resolve():
         maybe_write_result(result_file, result)
 
     log_event(

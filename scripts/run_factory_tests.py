@@ -90,9 +90,10 @@ def read_json(path: Path) -> dict[str, object]:
 
 
 def compile_check() -> None:
-    print("==> [1/10] Running script syntax checks")
+    print("==> [1/11] Running script syntax checks")
     scripts = [
         "scripts/factory_utils.py",
+        "scripts/factory_run_contract.py",
         "scripts/idea_source_engine.py",
         "scripts/state_store.py",
         "scripts/lifecycle_orchestrator.py",
@@ -121,7 +122,7 @@ def compile_check() -> None:
 
 
 def payload_schema_check() -> None:
-    print("==> [2/10] Validating test payload schemas")
+    print("==> [2/11] Validating test payload schemas")
     payloads = [LIVE_TEST_BRIEF, AIDAN_DRY_RUN_BRIEF, AIDAN_LIVE_BRIEF]
     required = (
         "project_id",
@@ -156,7 +157,7 @@ def payload_schema_check() -> None:
 
 
 def idea_source_and_scoring_tests() -> None:
-    print("==> [3/10] Running idea source + scoring tests")
+    print("==> [3/11] Running idea source + scoring tests")
     with tempfile.TemporaryDirectory(prefix="factory-idea-source-") as tmp_dir:
         tmp = Path(tmp_dir)
         selected = tmp / "selected.json"
@@ -203,7 +204,7 @@ def idea_source_and_scoring_tests() -> None:
 
 
 def business_gate_and_lifecycle_tests() -> None:
-    print("==> [4/10] Running business gate + lifecycle state tests")
+    print("==> [4/11] Running business gate + lifecycle state tests")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -311,7 +312,7 @@ def business_gate_and_lifecycle_tests() -> None:
 
 
 def full_dry_run_pipeline() -> None:
-    print("==> [5/10] Running happy-path dry-run execution tests")
+    print("==> [5/11] Running happy-path dry-run execution tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-") as tmp_dir:
         tmp = Path(tmp_dir)
         normalized = tmp / "normalized.json"
@@ -429,7 +430,7 @@ def full_dry_run_pipeline() -> None:
 
 
 def monitoring_and_summary_tests() -> None:
-    print("==> [6/10] Running monitor/scale/portfolio tests")
+    print("==> [6/11] Running monitor/scale/portfolio tests")
     with tempfile.TemporaryDirectory(prefix="factory-monitor-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "state.sqlite"
@@ -529,7 +530,7 @@ def monitoring_and_summary_tests() -> None:
 
 
 def negative_guard_tests() -> None:
-    print("==> [7/10] Running negative guard tests")
+    print("==> [7/11] Running negative guard tests")
     with tempfile.TemporaryDirectory(prefix="factory-tests-negative-") as tmp_dir:
         tmp = Path(tmp_dir)
         invalid_brief = tmp / "invalid_brief.json"
@@ -669,7 +670,7 @@ def negative_guard_tests() -> None:
 
 
 def quality_economics_distribution_tests() -> None:
-    print("==> [8/10] Running quality gate + build economics + distribution tests")
+    print("==> [8/11] Running quality gate + build economics + distribution tests")
     with tempfile.TemporaryDirectory(prefix="factory-qed-") as tmp_dir:
         tmp = Path(tmp_dir)
 
@@ -836,7 +837,7 @@ def quality_economics_distribution_tests() -> None:
 
 
 def e2e_simulation_tests() -> None:
-    print("==> [9/10] Running end-to-end pipeline simulation")
+    print("==> [9/11] Running end-to-end pipeline simulation")
     with tempfile.TemporaryDirectory(prefix="factory-e2e-") as tmp_dir:
         tmp = Path(tmp_dir)
         state_db = tmp / "e2e_state.sqlite"
@@ -1151,7 +1152,7 @@ def e2e_simulation_tests() -> None:
 
 def repo_discovery_tests() -> None:
     """Test repo discovery scoring, selection logic, fallback, and CLI."""
-    print("==> [10/10] Running repo discovery + template selection tests")
+    print("==> [10/11] Running repo discovery + template selection tests")
 
     # --- Import scoring/selection functions directly for unit tests. --------
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -1550,8 +1551,19 @@ def orchestrator_tests() -> None:
     # 1. Import check — verify the module exposes the expected contract constants.
     sys.path.insert(0, str(ROOT / "scripts"))
     import factory_orchestrator as fo  # noqa: E402
+    import factory_run_contract as frc  # noqa: E402
 
-    # Contract constant checks
+    # Contract version
+    if not isinstance(frc.CONTRACT_VERSION, str) or not frc.CONTRACT_VERSION.strip():
+        raise TestFailure(f"CONTRACT_VERSION must be a non-empty string, got {frc.CONTRACT_VERSION!r}")
+    if frc.CONTRACT_VERSION != fo.CONTRACT_VERSION:
+        raise TestFailure(
+            f"CONTRACT_VERSION mismatch: factory_run_contract={frc.CONTRACT_VERSION!r}, "
+            f"factory_orchestrator={fo.CONTRACT_VERSION!r}"
+        )
+    print(f"  contract_version={fo.CONTRACT_VERSION!r}: OK")
+
+    # BuildBrief v1 required fields
     for field in fo.BUILD_BRIEF_V1_REQUIRED_FIELDS:
         if not isinstance(field, str) or not field.strip():
             raise TestFailure(f"BUILD_BRIEF_V1_REQUIRED_FIELDS contains invalid entry: {field!r}")
@@ -1560,15 +1572,24 @@ def orchestrator_tests() -> None:
     if "product_name" not in fo.BUILD_BRIEF_V1_REQUIRED_FIELDS:
         raise TestFailure("BUILD_BRIEF_V1_REQUIRED_FIELDS missing 'product_name'")
 
+    # FactoryRunResult v1 keys
     for key in fo.FACTORY_RUN_RESULT_V1_KEYS:
         if not isinstance(key, str) or not key.strip():
             raise TestFailure(f"FACTORY_RUN_RESULT_V1_KEYS contains invalid entry: {key!r}")
-    for required_key in ("project_id", "status", "run_mode", "steps", "deployment"):
+    for required_key in ("contract_version", "project_id", "status", "run_mode",
+                         "steps", "deployment", "quality_result"):
         if required_key not in fo.FACTORY_RUN_RESULT_V1_KEYS:
             raise TestFailure(f"FACTORY_RUN_RESULT_V1_KEYS missing '{required_key}'")
     print("  contract constants: OK")
 
-    # 2. CLI dry-run: missing brief file should exit non-zero gracefully.
+    # 2. Verify factory_orchestrator re-exports match factory_run_contract
+    if fo.BUILD_BRIEF_V1_REQUIRED_FIELDS != frc.BUILD_BRIEF_V1_REQUIRED_FIELDS:
+        raise TestFailure("BUILD_BRIEF_V1_REQUIRED_FIELDS mismatch between orchestrator and contract module")
+    if fo.FACTORY_RUN_RESULT_V1_KEYS != frc.FACTORY_RUN_RESULT_V1_KEYS:
+        raise TestFailure("FACTORY_RUN_RESULT_V1_KEYS mismatch between orchestrator and contract module")
+    print("  contract re-exports consistent: OK")
+
+    # 3. CLI dry-run: missing brief file should exit non-zero gracefully.
     with tempfile.TemporaryDirectory(prefix="factory-orchestrator-") as tmp_dir:
         tmp = Path(tmp_dir)
         run_command(
