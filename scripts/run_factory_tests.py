@@ -114,6 +114,8 @@ def compile_check() -> None:
         "scripts/build_control.py",
         "scripts/ai_enhance.py",
         "scripts/repo_discovery_engine.py",
+        "scripts/factory_run_contract.py",
+        "scripts/factory_orchestrator.py",
         "scripts/run_factory_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)

@@ -2,6 +2,8 @@
 
 This document defines how AI-DAN should trigger and consume `factory-build` in this repository.
 
+Boundary: this repository is the execution plane only. It returns execution-run results and artifacts, while business/portfolio truth stays in Repo 1 (`aidan-managing-director`).
+
 ## Workflow endpoint
 
 - Workflow file: `.github/workflows/factory-build.yml`
@@ -9,6 +11,8 @@ This document defines how AI-DAN should trigger and consume `factory-build` in t
 - Trigger type: `workflow_dispatch`
 
 ## Dispatch inputs (contract)
+
+Required input contract: BuildBrief v1 for normal and dry-run execution.
 
 | Input | Type | Required | Notes |
 |---|---|---:|---|
@@ -43,6 +47,8 @@ Accepted false values: `false`, `0`, `no`, `n`, `off`, empty string
 
 ## Final response contract (factory_response)
 
+Canonical output contract: FactoryRunResult v1.
+
 The workflow emits a structured JSON response in:
 
 1. workflow output: `jobs.build.outputs.factory_response`
@@ -52,6 +58,8 @@ Response shape:
 
 ```json
 {
+  "contract_version": "FactoryRunResult.v1",
+  "build_brief_contract": "BuildBrief.v1",
   "project_id": "aidan-live-001",
   "run_id": "123456789",
   "run_attempt": "1",
@@ -64,6 +72,22 @@ Response shape:
   "deployment": {
     "status": "triggered",
     "url": "https://example.vercel.app"
+  },
+  "error": {
+    "code": "",
+    "message": ""
+  },
+  "quality": {
+    "status": "success",
+    "score": 10,
+    "decision": "PROCEED",
+    "reason": "Quality score 8+ — ready for distribution.",
+    "breakdown": {}
+  },
+  "execution_signals": {
+    "kill_candidate": false,
+    "optimize_candidate": true,
+    "scale_candidate": false
   },
   "idempotency_key": "aidan-live-001:abc123def4567890",
   "run_mode": "production",

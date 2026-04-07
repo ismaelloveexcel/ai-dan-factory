@@ -1,25 +1,27 @@
-# AI-DAN Factory — Automated Product Factory
+# AI-DAN Factory — Execution Plane
 
-A zero-touch product factory that validates ideas, creates repositories, builds products, deploys them, evaluates quality, and generates distribution content — all from a single BuildBrief JSON payload.
+This repository is the AI-DAN execution plane. It executes approved BuildBrief payloads, performs deterministic execution stages, and returns canonical execution artifacts.
+
+This repository is not the business control plane. Business/portfolio authority remains in `aidan-managing-director`.
 
 ## Overview
 
-The factory executes a strict pipeline:
+The execution plane runs a strict execution pipeline:
 
 ```
-BuildBrief → Validate → Score → Approve → Economics → Control → Repo Discovery →
-Queue → Create Repo → AI Enhance → Inject → Build → Deploy → Health Check →
-Quality Gate → Monitor → Distribute → Track → Learn
+BuildBrief → Validate → Gate → Economics → Control → Repo Discovery →
+Create Repo → Inject → Deploy → Health Check → Quality Gate →
+Execution Signals → Distribution Artifacts → FactoryRunResult
 ```
 
-Every decision is deterministic and auditable. AI enhancement via OpenAI generates high-quality marketing copy when `OPENAI_API_KEY` is available; otherwise, deterministic templates are used (marked as reduced quality).
+Execution stages are deterministic and auditable. Repo discovery/template selection remains first-class and can alter the template source when high-confidence external matches are found.
 
 ## Architecture
 
 ```text
 .
 ├── .github/workflows/
-│   ├── factory-build.yml              # Main pipeline (25+ steps)
+│   ├── factory-build.yml              # Thin workflow wrapper around Python orchestrator
 │   ├── factory-autonomous-runner.yml  # Scheduled idea source/score loop
 │   ├── factory-ci.yml                 # CI tests on PRs and pushes
 │   └── factory-monitor.yml            # Scheduled portfolio monitoring
@@ -40,7 +42,9 @@ Every decision is deterministic and auditable. AI enhancement via OpenAI generat
 │   ├── distribution_engine.py         # Phase 10: Distribution content + outreach
 │   ├── monitor_and_decide.py          # Phase 11: Signal evaluation + decisions
 │   ├── portfolio_summary.py           # Phase 11.5: Portfolio bucketing
-│   ├── lifecycle_orchestrator.py      # Strict state machine transitions
+│   ├── lifecycle_orchestrator.py      # Strict execution-run state transitions
+│   ├── factory_orchestrator.py        # Main execution orchestrator (stage sequencing)
+│   ├── factory_run_contract.py        # BuildBrief/FactoryRunResult contract helpers
 │   ├── state_store.py                 # Persistent SQLite lifecycle store
 │   ├── idea_source_engine.py          # Autonomous idea selection
 │   ├── factory_utils.py               # Shared utilities
@@ -49,7 +53,7 @@ Every decision is deterministic and auditable. AI enhancement via OpenAI generat
 │   └── run_factory_tests.py           # 9-stage automated test suite
 ├── templates/saas-template/           # Next.js 14 conversion-optimized landing page
 ├── test_data/                         # Test payloads and autonomous ideas
-├── data/lifecycle.sqlite              # Persistent lifecycle database
+├── data/lifecycle.sqlite              # Persistent execution-run state database
 ├── docs/                              # Integration contracts and checklists
 └── .env.example                       # Required environment variables
 ```
@@ -81,7 +85,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
    - `dry_run`: `true` (first time)
 4. Verify success, then re-run with `dry_run`: `false`
 
-## Pipeline Phases
+## Execution Stages
 
 ### Phase 1 — BuildBrief Validation
 Validates and normalizes input. Required fields:
