@@ -6,14 +6,15 @@ Shared utilities for factory scripts.
 from __future__ import annotations
 
 import hashlib
+import ipaddress as _ipaddress
 import json
 import os
 import re
 import tempfile
-import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "FACTORY_GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL", "FACTORY_BASE_URL")
 
@@ -100,13 +101,19 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
 def validate_webhook_url(url: str) -> None:
     """Reject invalid or non-HTTPS webhook URLs to mitigate SSRF risks.
 
-    Uses ``urllib.parse`` to validate the URL structure rather than simple
-    prefix matching. Requires HTTPS, a network location/hostname, and rejects
-    embedded credentials and fragments. Note: this does **not** prevent
-    redirect-based SSRF — that requires server-side controls on the director
-    endpoint.
+    Checks:
+      - HTTPS scheme required
+      - Hostname must be present (via ``netloc`` and ``hostname``)
+      - No embedded credentials or fragments
+      - Hostname normalized (lowercase, trailing dot stripped) and checked
+        against localhost names
+      - IP literals in private, reserved, loopback, or link-local ranges
+        are rejected via the ``ipaddress`` module
+
+    Note: this does **not** prevent redirect-based SSRF — that requires
+    server-side controls on the director endpoint.
     """
-    parsed = urllib.parse.urlparse(url)
+    parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(
             f"Webhook URL must use HTTPS (got scheme={parsed.scheme!r})"
@@ -117,3 +124,22 @@ def validate_webhook_url(url: str) -> None:
         raise ValueError("Webhook URL must not include embedded credentials")
     if parsed.fragment:
         raise ValueError("Webhook URL must not include a fragment")
+
+    # Normalize: lowercase + strip trailing dot (FQDN form)
+    hostname = parsed.hostname.lower().rstrip(".")
+
+    _BLOCKED_HOSTNAMES = {"localhost"}
+    if hostname in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"Webhook URL must not target localhost: '{hostname}'")
+
+    # Reject IP literals in private/reserved/loopback/link-local ranges
+    try:
+        addr = _ipaddress.ip_address(hostname)
+    except ValueError:
+        # hostname is not an IP literal (e.g. a regular domain) — that's fine
+        pass
+    else:
+        if addr.is_loopback or addr.is_private or addr.is_reserved or addr.is_link_local:
+            raise ValueError(
+                f"Webhook URL must not target private/reserved address: '{hostname}'"
+            )

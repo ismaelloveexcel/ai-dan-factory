@@ -170,6 +170,28 @@ def main() -> None:
         return
 
     try:
+        validate_webhook_url(director_base_url.rstrip("/") + "/factory/webhook")
+    except ValueError as exc:
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="failed",
+            mode=mode,
+            error=redact_secrets(str(exc)),
+        )
+        maybe_write_result(
+            args.result_file,
+            {
+                "project_id": project_id,
+                "step": STEP_NAME,
+                "status": "failed",
+                "mode": mode,
+                "error": redact_secrets(str(exc)),
+            },
+        )
+        raise SystemExit(1) from exc
+
+    try:
         _post_webhook(
             director_base_url=director_base_url,
             payload=payload,

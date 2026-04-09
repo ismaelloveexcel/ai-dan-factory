@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from factory_run_contract import BUILD_BRIEF_V1_REQUIRED_FIELDS
 from factory_utils import maybe_write_result
 from factory_run_contract import BUILD_BRIEF_V1_REQUIRED_FIELDS
 
