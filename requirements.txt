@@ -1,0 +1,9 @@
+# ai-dan-factory — Python dependencies
+#
+# The factory scripts are designed to run on Python ≥ 3.11 using only the
+# standard library.  This file exists so that `pip install -r requirements.txt`
+# succeeds cleanly in CI and Docker, and to document the one optional runtime
+# dependency.
+#
+# --- Optional (improves AI enhancement quality) ---
+# openai>=1.0,<2

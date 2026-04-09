@@ -55,12 +55,18 @@ Every decision is deterministic and auditable. AI enhancement via OpenAI generat
 │   ├── factory_utils.py               # Shared utilities
 │   ├── normalize_workflow_inputs.py   # Workflow input normalization
 │   ├── emit_alert.py                  # Failure alert payloads
-│   ├── notify_director.py             # Managing Director webhook notification
-│   └── run_factory_tests.py           # 11-stage automated test suite
+│   ├── notify_director.py             # Managing Director webhook notification (legacy)
+│   ├── factory_callback.py            # Managing Director callback (v2, authenticated)
+│   ├── brief_adapter.py               # Converts MD BuildBrief → Factory BuildBrief v1
+│   ├── validate_env.py                # Environment validation preflight
+│   ├── run_factory_tests.py           # 11-stage automated test suite
+│   └── run_integration_tests.py       # Cross-repo integration tests
 ├── templates/saas-template/           # Next.js 14 conversion-optimized landing page
 ├── test_data/                         # Test payloads and autonomous ideas
 ├── data/lifecycle.sqlite              # Persistent lifecycle database
 ├── docs/                              # Integration contracts and checklists
+├── Dockerfile                         # Optional containerised execution
+├── requirements.txt                   # Python dependencies (stdlib-only + optional openai)
 └── .env.example                       # Required environment variables
 ```
 
@@ -76,6 +82,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
 | `VERCEL_DEPLOY_HOOK_URL` | Yes | Vercel webhook URL for triggering deployments |
 | `OPENAI_API_KEY` | Recommended | OpenAI key for AI-generated copy (headlines, CTAs, descriptions) |
 | `FACTORY_BASE_URL` | No | Base URL of Managing Director for webhook notifications |
+| `FACTORY_SECRET` | No | Shared secret for callback authentication (`X-Factory-Secret` header) |
 | `TEMPLATE_OWNER` | No | Template repo owner (defaults to current repo owner) |
 | `TEMPLATE_REPO` | No | Template repo name (defaults to current repo name) |
 | `MAX_BUILDS_PER_DAY` | No | Daily build limit (default: 20) |
@@ -225,24 +232,30 @@ GitHub Actions workflows:
 
 ```
  1. Checkout + setup
- 2. Normalize input contract
- 3. Run tests only (if enabled)
- 4. Execute factory pipeline via factory_orchestrator.py:
+ 2. Adapt MD BuildBrief if needed (brief_adapter.py)
+ 3. Normalize input contract
+ 4. Run tests only (if enabled)
+ 5. Execute factory pipeline via factory_orchestrator.py:
     a. input_stage: validate brief → business gate → economics → control → repo discovery
     b. build_stage: lifecycle → create repo → inject brief → business output
     c. deploy_stage: deploy → health check → quality gate → monitor → distribute
- 5. Read orchestrator outputs (set env vars)
- 6. Notify Managing Director
- 7. Portfolio summary
- 8. Finalize factory-response.json
- 9. Emit alert on failure
-10. Upload artifacts
+ 6. Read orchestrator outputs (set env vars)
+ 7. Notify Managing Director (legacy webhook)
+ 8. Callback to Managing Director (authenticated /factory/callback)
+ 9. Portfolio summary
+10. Finalize factory-response.json
+11. Emit alert on failure
+12. Upload artifacts
 ```
 
 ## Automated Testing
 
 ```bash
+# Unit + pipeline tests (11 stages)
 python3 scripts/run_factory_tests.py
+
+# Cross-repo integration tests (brief adapter, callback, contract validation)
+python3 scripts/run_integration_tests.py
 ```
 
 11-stage test suite:
@@ -281,6 +294,36 @@ Every deployed product landing page includes:
 - Bottom CTA for repeat conversion opportunity
 - Mobile-friendly responsive layout
 - Clean, uncluttered design with readable typography
+
+## Managing Director Integration
+
+This repo integrates with the [aidan-managing-director](https://github.com/ai-dan/aidan-managing-director) control plane:
+
+1. **Dispatch**: MD dispatches `factory-build.yml` via workflow_dispatch with `build_brief_json`, `correlation_id`, and `callback_url`
+2. **Brief Adaptation**: `brief_adapter.py` auto-converts MD's Pydantic BuildBrief schema to Factory BuildBrief v1
+3. **Execution**: `factory_orchestrator.py` runs the full pipeline
+4. **Callback**: `factory_callback.py` POSTs results to MD's `/factory/callback` with `X-Factory-Secret` auth
+5. **Legacy**: `notify_director.py` also POSTs to `/factory/webhook` for backward compatibility
+
+### Callback Payload
+
+```json
+{
+  "project_id": "my-saas-001",
+  "correlation_id": "corr-abc-123",
+  "run_id": "12345",
+  "status": "succeeded",
+  "deploy_url": "https://my-saas.vercel.app",
+  "repo_url": "https://github.com/org/my-saas-001"
+}
+```
+
+## Docker
+
+```bash
+docker build -t ai-dan-factory .
+docker run --env-file .env ai-dan-factory --brief-file /path/to/brief.json --project-id my-project --dry-run
+```
 
 ## Documentation
 

@@ -32,3 +32,8 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/run_factory_tests.py
+
+      - name: Run integration tests
+        run: |
+          set -euo pipefail
+          python scripts/run_integration_tests.py

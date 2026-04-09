@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "idea_id": "md-test-idea-001",
+  "correlation_id": "corr-test-001",
+  "project_id": "md-schema-test-001",
+  "hypothesis": "Indie devs need an AI-powered landing page builder that converts 3x better than generic templates",
+  "target_user": "Solo SaaS founders with limited marketing budget",
+  "problem": "Most indie devs cannot afford a conversion rate optimization specialist and generic templates convert poorly",
+  "solution": "AI-generated landing pages tuned per niche with built-in A/B test suggestions",
+  "mvp_scope": [
+    "AI-generated landing page from brief input",
+    "Niche-specific copy and layout",
+    "CTA button with email capture"
+  ],
+  "acceptance_criteria": [
+    "Landing page loads in < 2s",
+    "Email capture stores to DB",
+    "Hero section personalised to niche"
+  ],
+  "landing_page_requirements": {
+    "hero_headline": "Launch Pages That Actually Convert",
+    "subheadline": "AI-powered landing pages for indie hackers",
+    "social_proof": "Used by 200+ solo founders"
+  },
+  "cta": "Start Free",
+  "pricing_hint": "$29/mo after free trial",
+  "command_bundle": {
+    "business_package": {
+      "pricing_model": "subscription",
+      "price_range": "$19-$49/mo",
+      "gtm_strategy": "Product Hunt launch + SEO content"
+    },
+    "market_truth": {
+      "reason": "Landing page builder market growing, but no AI-native solution for indie devs"
+    },
+    "score": {
+      "total": 8.2,
+      "breakdown": {
+        "market_demand": 1.8,
+        "competition_saturation": 1.2,
+        "monetization_readiness": 2.0,
+        "execution_feasibility": 1.7,
+        "differentiation": 1.5
+      }
+    }
+  },
+  "feature_flags": {
+    "enable_ab_testing": true,
+    "enable_analytics": true
+  },
+  "validation_score": 0.82,
+  "risk_flags": ["Competitive market for landing page builders"],
+  "monetization_model": "subscription"
+}

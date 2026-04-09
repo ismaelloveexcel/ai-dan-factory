@@ -24,6 +24,8 @@ Required input contract: BuildBrief v1 for normal and dry-run execution.
 | `traffic_signal` | enum string | no | `LOW` / `MEDIUM` / `HIGH` (monitoring decision input) |
 | `activation_metric` | enum string | no | `LOW` / `MEDIUM` / `HIGH` (monitoring decision input) |
 | `revenue_signal_status` | enum string | no | `NONE` / `WEAK` / `STRONG` (monitoring decision input) |
+| `correlation_id` | string | no | End-to-end correlation ID for tracing; returned in callback |
+| `callback_url` | string | no | URL to POST build results to (e.g. `https://md.example.com/factory/callback`) |
 
 ### Boolean parsing
 
@@ -110,6 +112,8 @@ Example dispatch payload:
   "inputs": {
     "project_id": "aidan-live-001",
     "build_brief_json": "{\"project_id\":\"aidan-live-001\",\"product_name\":\"AI-DAN Live Integration Product\",\"problem\":\"AI-DAN needs a reliable first-party way to launch and track factory builds from workflow triggers.\",\"solution\":\"A production-safe placeholder brief used to confirm repo creation, brief injection, and deployment trigger behavior.\",\"cta\":\"Join waitlist\",\"source_type\":\"EXISTING_PRODUCT\",\"reference_context\":\"Modeled from high-performing B2B workflow automation products with active paid plans.\",\"demand_level\":\"HIGH\",\"monetization_proof\":\"YES\",\"market_saturation\":\"MEDIUM\",\"differentiation\":\"STRONG\",\"build_complexity\":\"MEDIUM\",\"speed_to_revenue\":\"FAST\"}",
+    "correlation_id": "corr-abc-123",
+    "callback_url": "https://md.example.com/factory/callback",
     "dry_run": "false",
     "run_automated_tests_only": "false",
     "test_mode": "false",
@@ -120,14 +124,53 @@ Example dispatch payload:
 }
 ```
 
+The `build_brief_json` can be in either:
+- **Factory-native format** (flat JSON with `source_type`, `demand_level`, etc.)
+- **Managing Director format** (Pydantic schema with `schema_version`, `idea_id`, `command_bundle`, etc.)
+
+When an MD-format brief is detected (has `idea_id` or `schema_version`), it is automatically adapted to Factory-native format by `scripts/brief_adapter.py`.
+
 ## How AI-DAN should poll and read results
 
-Recommended:
+Recommended (polling — legacy):
 
 1. Trigger `workflow_dispatch`.
 2. Poll run status until completed (`queued`/`in_progress` → `completed`).
 3. Download artifact `factory-result-<run_id>-<run_attempt>`.
 4. Parse `factory-response.json` as the source of truth.
+
+Recommended (callback — preferred):
+
+1. Trigger `workflow_dispatch` with `callback_url` and `correlation_id`.
+2. Factory POSTs results to `callback_url` on completion.
+3. Callback is authenticated with `X-Factory-Secret` header (must match `FACTORY_SECRET` secret).
+
+### Callback payload
+
+```json
+{
+  "project_id": "aidan-live-001",
+  "correlation_id": "corr-abc-123",
+  "run_id": "123456789",
+  "status": "succeeded",
+  "deploy_url": "https://example.vercel.app",
+  "repo_url": "https://github.com/org/aidan-live-001"
+}
+```
+
+On failure, an `error` field is included:
+
+```json
+{
+  "project_id": "aidan-live-001",
+  "correlation_id": "corr-abc-123",
+  "run_id": "123456789",
+  "status": "failed",
+  "deploy_url": "",
+  "repo_url": "",
+  "error": "Factory build failed; check workflow logs"
+}
+```
 
 This artifact convention is deterministic and machine-friendly.
 

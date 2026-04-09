@@ -122,7 +122,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build control and rate limiting")
     parser.add_argument("--brief-file", required=True, help="Path to normalized brief JSON")
     parser.add_argument("--state-db", required=True, help="Path to lifecycle SQLite DB")
-    parser.add_argument("--business-score", type=int, default=0, help="Business gate score")
+    parser.add_argument("--business-score", type=float, default=0, help="Business gate score")
     parser.add_argument("--result-file", default="", help="Path to write control result JSON")
     parser.add_argument("--project-id", default="", help="Project identifier for logging")
     parser.add_argument("--dry-run", action="store_true", help="Check limits without blocking")

@@ -63,6 +63,16 @@ on:
           - "NONE"
           - "WEAK"
           - "STRONG"
+      correlation_id:
+        description: "End-to-end correlation ID for tracing (from Managing Director)"
+        required: false
+        default: ""
+        type: string
+      callback_url:
+        description: "URL to POST build results back to Managing Director"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   build:
@@ -117,6 +127,39 @@ jobs:
           echo "TIMESTAMP_UTC=$TIMESTAMP_UTC" >> "$GITHUB_ENV"
           echo "RUN_ID=${{ github.run_id }}" >> "$GITHUB_ENV"
           echo "RUN_ATTEMPT=${{ github.run_attempt }}" >> "$GITHUB_ENV"
+          echo "CORRELATION_ID=${{ inputs.correlation_id }}" >> "$GITHUB_ENV"
+          echo "CALLBACK_URL=${{ inputs.callback_url }}" >> "$GITHUB_ENV"
+
+      - name: 3b) Adapt MD BuildBrief to Factory schema
+        if: inputs.build_brief_json != ''
+        run: |
+          set -euo pipefail
+          # Detect if the brief is from the Managing Director (has schema_version/idea_id)
+          # and convert it to Factory-native format if needed
+          python - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, "scripts")
+          from brief_adapter import adapt_brief
+
+          brief_file = os.environ["BRIEF_FILE"]
+          with open(brief_file, "r", encoding="utf-8") as f:
+              content = f.read().strip()
+          if not content:
+              sys.exit(0)
+          try:
+              brief = json.loads(content)
+          except json.JSONDecodeError:
+              sys.exit(0)
+
+          # Only adapt if it looks like an MD brief (has idea_id or schema_version)
+          if brief.get("idea_id") or brief.get("schema_version"):
+              adapted = adapt_brief(brief)
+              with open(brief_file, "w", encoding="utf-8") as f:
+                  json.dump(adapted, f, indent=2, ensure_ascii=True)
+              print(f"[brief_adapter] Converted MD brief to Factory schema for project {adapted.get('project_id')}")
+          else:
+              print("[brief_adapter] Brief is already in Factory-native format, skipping adaptation")
+          PY
 
       - name: 4) Normalize and validate input contract
         env:
@@ -332,6 +375,64 @@ jobs:
           fi
 
           python scripts/notify_director.py "${NOTIFY_ARGS[@]}" || true
+
+      - name: 8b) Callback to Managing Director
+        if: always() && env.CALLBACK_URL != ''
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          FACTORY_SECRET: ${{ secrets.FACTORY_SECRET }}
+          CORRELATION_ID: ${{ env.CORRELATION_ID }}
+          RUN_ID: ${{ env.RUN_ID }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+          DEPLOYMENT_URL: ${{ env.DEPLOYMENT_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CALLBACK_URL:-}" ]; then
+            echo "[callback] No callback_url configured — skipping."
+            exit 0
+          fi
+
+          if [ "${{ job.status }}" = "success" ]; then
+            BUILD_STATUS="succeeded"
+          else
+            BUILD_STATUS="failed"
+          fi
+
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          REPO_URL_VAL="$(python - <<'PY'
+          import json, os, sys
+          p = os.path.join(os.environ.get("RESULT_DIR", ""), "create_repo.json")
+          try:
+              with open(p, "r", encoding="utf-8") as f:
+                  print(json.load(f).get("repo_url", ""))
+          except (FileNotFoundError, json.JSONDecodeError):
+              print("")
+          PY
+          )"
+
+          CALLBACK_ARGS=(
+            --project-id "${PROJECT_ID_INPUT:-unknown}"
+            --correlation-id "${CORRELATION_ID:-}"
+            --callback-url "${CALLBACK_URL}"
+            --status "$BUILD_STATUS"
+            --run-id "${RUN_ID:-${{ github.run_id }}}"
+            --workflow-url "${WORKFLOW_URL:-}"
+            --deploy-url "${DEPLOYMENT_URL:-}"
+            --repo-url "$REPO_URL_VAL"
+            --result-file "$RESULT_DIR/factory_callback.json"
+          )
+          if [ "$BUILD_STATUS" = "failed" ]; then
+            CALLBACK_ARGS+=(--error-summary "Factory build failed; check workflow logs")
+          fi
+          if [ -n "$DRY_RUN_FLAG" ]; then
+            CALLBACK_ARGS+=(--dry-run)
+          fi
+
+          python scripts/factory_callback.py "${CALLBACK_ARGS[@]}" || true
 
       - name: 9) Portfolio simplified summary
         if: always()

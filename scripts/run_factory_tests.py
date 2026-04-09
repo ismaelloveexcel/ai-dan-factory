@@ -118,6 +118,10 @@ def compile_check() -> None:
         "scripts/factory_run_contract.py",
         "scripts/factory_orchestrator.py",
         "scripts/run_factory_tests.py",
+        "scripts/brief_adapter.py",
+        "scripts/factory_callback.py",
+        "scripts/validate_env.py",
+        "scripts/run_integration_tests.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
 
