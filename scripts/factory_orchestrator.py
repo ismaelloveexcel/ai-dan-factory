@@ -94,7 +94,7 @@ def _run_script(
             partial = f" Partial stdout: {redact_secrets(str(exc.stdout)[:500])}"
         raise OrchestratorError(
             f"Stage step '{step}' timed out after {timeout}s.{partial}"
-        )
+        ) from exc
     if result.stdout:
         print(redact_secrets(result.stdout.rstrip()), flush=True)
     if result.stderr:
