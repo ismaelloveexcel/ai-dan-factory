@@ -23,8 +23,8 @@ from factory_utils import log_event, maybe_write_result, redact_secrets, validat
 
 STEP_NAME = "factory_callback"
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-_MAX_RETRIES = 3
-_RETRY_DELAY_SECONDS = 2
+_MAX_RETRIES = 4
+_INITIAL_DELAY_SECONDS = 2
 
 
 def _post_callback(
@@ -33,8 +33,11 @@ def _post_callback(
     payload: dict,
     factory_secret: str = "",
     timeout: int = 30,
-) -> None:
-    """POST the result payload to the MD callback endpoint with auth."""
+) -> dict | None:
+    """POST the result payload to the MD callback endpoint with auth.
+
+    Returns the parsed JSON ack from the MD on success, or raises on failure.
+    """
     validate_webhook_url(callback_url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
@@ -46,6 +49,7 @@ def _post_callback(
             req.add_header("X-Factory-Secret", factory_secret)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_body = resp.read().decode("utf-8", errors="replace")
                 log_event(
                     project_id=payload.get("project_id", "unknown"),
                     step=STEP_NAME,
@@ -54,10 +58,14 @@ def _post_callback(
                     http_status=resp.status,
                     callback_url=redact_secrets(callback_url),
                 )
-            return
+                try:
+                    return json.loads(resp_body)
+                except (json.JSONDecodeError, ValueError):
+                    return None
         except urllib.error.HTTPError as exc:
             last_exc = exc
             if exc.code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES - 1:
+                delay = _INITIAL_DELAY_SECONDS * (2 ** attempt)
                 log_event(
                     project_id=payload.get("project_id", "unknown"),
                     step=STEP_NAME,
@@ -65,13 +73,15 @@ def _post_callback(
                     mode="production",
                     attempt=attempt + 1,
                     http_status=exc.code,
+                    retry_in_seconds=delay,
                 )
-                time.sleep(_RETRY_DELAY_SECONDS)
+                time.sleep(delay)
                 continue
             raise
         except urllib.error.URLError as exc:
             last_exc = exc
             if attempt < _MAX_RETRIES - 1:
+                delay = _INITIAL_DELAY_SECONDS * (2 ** attempt)
                 log_event(
                     project_id=payload.get("project_id", "unknown"),
                     step=STEP_NAME,
@@ -79,8 +89,9 @@ def _post_callback(
                     mode="production",
                     attempt=attempt + 1,
                     reason="network_error",
+                    retry_in_seconds=delay,
                 )
-                time.sleep(_RETRY_DELAY_SECONDS)
+                time.sleep(delay)
                 continue
             raise
 
@@ -145,15 +156,21 @@ def main() -> int:
         return 1
 
     try:
-        _post_callback(callback_url=callback_url, payload=payload, factory_secret=factory_secret)
-        log_event(project_id=project_id, step=STEP_NAME, status="success", mode="production")
-        maybe_write_result(args.result_file, {"project_id": project_id, "step": STEP_NAME, "status": "success", "mode": "production"})
+        ack = _post_callback(callback_url=callback_url, payload=payload, factory_secret=factory_secret)
+        ack_status = ack.get("status", "") if ack else ""
+        log_event(project_id=project_id, step=STEP_NAME, status="success", mode="production", md_ack_status=ack_status)
+        result = {"project_id": project_id, "step": STEP_NAME, "status": "success", "mode": "production"}
+        if ack:
+            result["md_ack"] = ack
+        maybe_write_result(args.result_file, result)
     except Exception as exc:
-        # Best-effort: log but don't fail the workflow
         error_msg = redact_secrets(str(exc))
         log_event(project_id=project_id, step=STEP_NAME, status="failed", error=error_msg)
         maybe_write_result(args.result_file, {"project_id": project_id, "step": STEP_NAME, "status": "failed", "error": error_msg})
-        print(f"[{STEP_NAME}] Callback failed (best-effort): {error_msg}", file=sys.stderr, flush=True)
+        print(f"[{STEP_NAME}] Callback failed after retries: {error_msg}", file=sys.stderr, flush=True)
+        # Exit non-zero so the workflow step fails visibly and can trigger
+        # the alert step — never silently swallow delivery failures.
+        return 1
 
     return 0
 
