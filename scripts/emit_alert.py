@@ -12,14 +12,13 @@ import time
 import urllib.error
 import urllib.request
 
-from factory_utils import log_event, maybe_write_result, redact_secrets
+from factory_utils import log_event, maybe_write_result, redact_secrets, validate_webhook_url
 
 STEP_NAME = "emit_alert"
 _DEFAULT_DIRECTOR_BASE_URL_ENV = "FACTORY_BASE_URL"
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
 _RETRY_DELAY_SECONDS = 2
-_ALLOWED_SCHEMES = ("https://",)
 
 
 def _post_webhook(
@@ -31,10 +30,7 @@ def _post_webhook(
 ) -> None:
     """POST alert payload to Managing Director webhook (best-effort)."""
     url = director_base_url.rstrip("/") + "/factory/webhook"
-    if not any(url.startswith(s) for s in _ALLOWED_SCHEMES):
-        raise ValueError(
-            f"Director webhook URL must use HTTPS (got {url[:40]}...)"
-        )
+    validate_webhook_url(url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     for attempt in range(_MAX_RETRIES):

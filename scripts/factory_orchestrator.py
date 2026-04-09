@@ -88,9 +88,12 @@ def _run_script(
             capture_output=True,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        partial = ""
+        if exc.stdout:
+            partial = f" Partial stdout: {redact_secrets(str(exc.stdout)[:500])}"
         raise OrchestratorError(
-            f"Stage step '{step}' timed out after {timeout}s"
+            f"Stage step '{step}' timed out after {timeout}s.{partial}"
         )
     if result.stdout:
         print(redact_secrets(result.stdout.rstrip()), flush=True)

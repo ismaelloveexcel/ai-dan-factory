@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -94,3 +95,17 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
     digest_source = json.dumps(brief, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
     return f"{project_id}:{digest}"
+
+
+def validate_webhook_url(url: str) -> None:
+    """Reject non-HTTPS webhook URLs to mitigate SSRF risks.
+
+    Uses ``urllib.parse`` to validate the scheme rather than simple prefix
+    matching.  Note: this does **not** prevent redirect-based SSRF — that
+    requires server-side controls on the director endpoint.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(
+            f"Webhook URL must use HTTPS (got scheme={parsed.scheme!r})"
+        )
