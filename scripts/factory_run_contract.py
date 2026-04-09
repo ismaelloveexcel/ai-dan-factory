@@ -50,14 +50,20 @@ def normalize_step(step_name: str, payload: dict[str, Any], run_mode: str) -> di
 
     message = ""
     if status == "failed":
-        message = str(payload.get("error", "")).strip() or str(payload.get("reason", "")).strip()
+        message = (
+            str(payload.get("error", "")).strip()
+            or str(payload.get("reason", "")).strip()
+            or str(payload.get("error_summary", "")).strip()
+            or str(payload.get("failure_reason", "")).strip()
+            or f"{step_name} failed"
+        )
 
     step: dict[str, Any] = {
         "name": step_name,
         "status": status,
         "mode": str(payload.get("mode", run_mode)).strip() or run_mode,
     }
-    if message:
+    if status == "failed":
         step["error"] = {"code": "STEP_FAILED", "message": message}
     return step
 

@@ -181,6 +181,20 @@ def gate_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> tuple[dict[st
                 "mode": run_mode,
             },
         )
+    else:
+        _write_json(
+            _result_path(ctx, "lifecycle_idea"),
+            {
+                "project_id": project_id,
+                "step": "lifecycle_idea",
+                "status": "failed",
+                "mode": run_mode,
+                "error": (proc.stderr or proc.stdout or "").strip() or "Lifecycle initialization failed.",
+            },
+        )
+        raise OrchestratorError(
+            f"Lifecycle initialization failed with exit code {proc.returncode}."
+        )
 
     validate_args = [
         "scripts/validate_brief.py",
@@ -323,6 +337,20 @@ def repo_stage(ctx: Context, normalized_inputs: dict[str, Any], gate_data: dict[
         _write_json(
             _result_path(ctx, "lifecycle_building"),
             {"project_id": project_id, "step": "lifecycle_building", "status": "success", "mode": run_mode},
+        )
+    else:
+        _write_json(
+            _result_path(ctx, "lifecycle_building"),
+            {
+                "project_id": project_id,
+                "step": "lifecycle_building",
+                "status": "failed",
+                "mode": run_mode,
+                "error": (proc.stderr or proc.stdout or "").strip() or "Lifecycle transition to building failed.",
+            },
+        )
+        raise OrchestratorError(
+            f"Failed to transition project {project_id} to building state (exit code {proc.returncode})."
         )
 
     normalized_brief = _read_json(ctx.normalized_brief_file)
@@ -532,6 +560,19 @@ def deploy_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
                 _result_path(ctx, step),
                 {"project_id": project_id, "step": step, "status": "success", "mode": run_mode},
             )
+        else:
+            error_output = (proc.stderr or proc.stdout or "").strip() or f"Lifecycle transition to {to_state} failed."
+            _write_json(
+                _result_path(ctx, step),
+                {
+                    "project_id": project_id,
+                    "step": step,
+                    "status": "failed",
+                    "mode": run_mode,
+                    "error": error_output,
+                },
+            )
+            raise OrchestratorError(f"Lifecycle transition to {to_state} failed.")
 
     if _run_python(
         ctx,
@@ -606,7 +647,29 @@ def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
         distribution_args.append("--dry-run")
 
     if business_output_file.is_file():
-        _run_python(ctx, distribution_args)
+        dist_proc = _run_python(ctx, distribution_args)
+        if dist_proc.returncode != 0:
+            _write_json(
+                _result_path(ctx, "distribution"),
+                {
+                    "project_id": project_id,
+                    "step": "distribution",
+                    "status": "failed",
+                    "mode": "dry_run" if dry_run_effective else "production",
+                    "error": (dist_proc.stderr or dist_proc.stdout or "").strip() or "Distribution engine failed.",
+                },
+            )
+    else:
+        _write_json(
+            _result_path(ctx, "distribution"),
+            {
+                "project_id": project_id,
+                "step": "distribution",
+                "status": "skipped",
+                "mode": "dry_run" if dry_run_effective else "production",
+                "reason": "No business output file available.",
+            },
+        )
 
     repo_url_val = str(_read_json(_result_path(ctx, "create_repo")).get("repo_url", ""))
     deploy_health = _read_json(_result_path(ctx, "deploy_health"))
@@ -632,9 +695,20 @@ def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
         notify_args.extend(["--error", f"Build failed with health_status: {health_status}"])
     if dry_run_effective:
         notify_args.append("--dry-run")
-    _run_python(ctx, notify_args)
+    notify_proc = _run_python(ctx, notify_args)
+    if notify_proc.returncode != 0:
+        _write_json(
+            _result_path(ctx, "notify_director"),
+            {
+                "project_id": project_id,
+                "step": "notify_director",
+                "status": "failed",
+                "mode": "dry_run" if dry_run_effective else "production",
+                "error": (notify_proc.stderr or notify_proc.stdout or "").strip() or "Notify director failed.",
+            },
+        )
 
-    _run_python(
+    portfolio_proc = _run_python(
         ctx,
         [
             "scripts/portfolio_summary.py",
@@ -644,6 +718,17 @@ def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
             str(_result_path(ctx, "portfolio_summary")),
         ],
     )
+    if portfolio_proc.returncode != 0:
+        _write_json(
+            _result_path(ctx, "portfolio_summary"),
+            {
+                "project_id": project_id,
+                "step": "portfolio_summary",
+                "status": "failed",
+                "mode": "dry_run" if dry_run_effective else "production",
+                "error": (portfolio_proc.stderr or portfolio_proc.stdout or "").strip() or "Portfolio summary failed.",
+            },
+        )
 
 
 def finalize_result(ctx: Context, run_mode: str, orchestrator_error: str = "") -> dict[str, Any]:

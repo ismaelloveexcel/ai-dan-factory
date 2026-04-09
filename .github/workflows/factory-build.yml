@@ -117,11 +117,12 @@ jobs:
           TEMPLATE_OWNER: ${{ github.repository_owner }}
           TEMPLATE_REPO: ${{ github.event.repository.name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
         run: |
           set -euo pipefail
           python scripts/factory_orchestrator.py \
             --project-id "${{ inputs.project_id }}" \
-            --build-brief-json "${{ inputs.build_brief_json }}" \
+            --build-brief-json "$BUILD_BRIEF_JSON" \
             --dry-run "${{ inputs.dry_run }}" \
             --run-automated-tests-only "${{ inputs.run_automated_tests_only }}" \
             --test-mode "${{ inputs.test_mode }}" \

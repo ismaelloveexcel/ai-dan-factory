@@ -50,7 +50,7 @@ Execution stages are deterministic and auditable. Repo discovery/template select
 │   ├── factory_utils.py               # Shared utilities
 │   ├── normalize_workflow_inputs.py   # Workflow input normalization
 │   ├── emit_alert.py                  # Failure alert payloads
-│   └── run_factory_tests.py           # 9-stage automated test suite
+│   └── run_factory_tests.py           # 10-stage automated test suite
 ├── templates/saas-template/           # Next.js 14 conversion-optimized landing page
 ├── test_data/                         # Test payloads and autonomous ideas
 ├── data/lifecycle.sqlite              # Persistent execution-run state database
