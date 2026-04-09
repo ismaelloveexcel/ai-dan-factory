@@ -58,8 +58,7 @@ Response shape:
 
 ```json
 {
-  "contract_version": "FactoryRunResult.v1",
-  "build_brief_contract": "BuildBrief.v1",
+  "contract_version": "v1",
   "project_id": "aidan-live-001",
   "run_id": "123456789",
   "run_attempt": "1",
@@ -68,29 +67,20 @@ Response shape:
   "repo_url": "https://github.com/org/aidan-live-001",
   "deployment_url": "https://example.vercel.app",
   "status": "success",
+  "run_mode": "production",
+  "idempotency_key": "aidan-live-001:abc123def4567890",
   "steps": [],
   "deployment": {
     "status": "triggered",
     "url": "https://example.vercel.app"
   },
-  "error": {
-    "code": "",
-    "message": ""
-  },
-  "quality": {
+  "quality_result": {
     "status": "success",
     "score": 10,
     "decision": "PROCEED",
     "reason": "Quality score 8+ — ready for distribution.",
     "breakdown": {}
   },
-  "execution_signals": {
-    "kill_candidate": false,
-    "optimize_candidate": true,
-    "scale_candidate": false
-  },
-  "idempotency_key": "aidan-live-001:abc123def4567890",
-  "run_mode": "production",
   "error_summary": "",
   "failure_reason": "",
   "kill_candidate": false,

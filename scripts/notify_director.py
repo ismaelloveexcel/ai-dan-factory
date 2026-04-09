@@ -30,6 +30,7 @@ def _post_webhook(
     timeout: int = 30,
 ) -> None:
     url = director_base_url.rstrip("/") + "/factory/webhook"
+    validate_webhook_url(url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     last_exc: Exception | None = None
@@ -44,7 +45,7 @@ def _post_webhook(
                     status="webhook_sent",
                     mode=mode,
                     http_status=resp.status,
-                    director_url=url,
+                    director_url=redact_secrets(url),
                 )
             return
         except urllib.error.HTTPError as exc:

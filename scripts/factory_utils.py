@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL", "FACTORY_GITHUB_TOKEN", "FACTORY_BASE_URL")
+SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "FACTORY_GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL", "FACTORY_BASE_URL")
 
 
 def utc_timestamp() -> str:
@@ -66,14 +66,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def atomic_write_text(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_file = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent))
-    temp_path = Path(tmp_file.name)
+    temp_path: Path | None = None
     try:
-        with tmp_file:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp_file:
             tmp_file.write(contents)
+            temp_path = Path(tmp_file.name)
         temp_path.replace(path)
     except BaseException:
-        temp_path.unlink(missing_ok=True)
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
         raise
 
 
@@ -97,22 +98,32 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
     return f"{project_id}:{digest}"
 
 
-def validate_webhook_url(url: str) -> str:
-    """Validate and return a webhook URL; enforce HTTPS to mitigate SSRF.
+def validate_webhook_url(url: str) -> None:
+    """Reject invalid or non-HTTPS webhook URLs to mitigate SSRF risks.
 
     Checks:
       - HTTPS scheme required
-      - Hostname must be present
+      - Hostname must be present (via ``netloc`` and ``hostname``)
+      - No embedded credentials or fragments
       - Hostname normalized (lowercase, trailing dot stripped) and checked
         against localhost names
       - IP literals in private, reserved, loopback, or link-local ranges
         are rejected via the ``ipaddress`` module
+
+    Note: this does **not** prevent redirect-based SSRF — that requires
+    server-side controls on the director endpoint.
     """
     parsed = urlparse(url)
     if parsed.scheme != "https":
-        raise ValueError(f"Webhook URL must use HTTPS scheme, got '{parsed.scheme}'")
-    if not parsed.hostname:
-        raise ValueError("Webhook URL has no hostname")
+        raise ValueError(
+            f"Webhook URL must use HTTPS (got scheme={parsed.scheme!r})"
+        )
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("Webhook URL must include a valid HTTPS host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Webhook URL must not include embedded credentials")
+    if parsed.fragment:
+        raise ValueError("Webhook URL must not include a fragment")
 
     # Normalize: lowercase + strip trailing dot (FQDN form)
     hostname = parsed.hostname.lower().rstrip(".")
@@ -132,4 +143,3 @@ def validate_webhook_url(url: str) -> str:
             raise ValueError(
                 f"Webhook URL must not target private/reserved address: '{hostname}'"
             )
-    return url

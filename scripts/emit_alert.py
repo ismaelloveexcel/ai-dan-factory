@@ -30,6 +30,7 @@ def _post_webhook(
 ) -> None:
     """POST alert payload to Managing Director webhook (best-effort)."""
     url = director_base_url.rstrip("/") + "/factory/webhook"
+    validate_webhook_url(url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     for attempt in range(_MAX_RETRIES):
@@ -43,7 +44,7 @@ def _post_webhook(
                     status="webhook_sent",
                     mode="production",
                     http_status=resp.status,
-                    director_url=url,
+                    director_url=redact_secrets(url),
                 )
             return
         except urllib.error.HTTPError as exc:
