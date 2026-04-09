@@ -50,7 +50,7 @@ from factory_run_contract import (
     CONTRACT_VERSION,
     FACTORY_RUN_RESULT_V1_KEYS,
 )
-from factory_utils import log_event, maybe_write_result
+from factory_utils import log_event, maybe_write_result, redact_secrets
 
 # Re-export contract constants so existing importers of this module keep working
 __all__ = [
@@ -78,16 +78,16 @@ def _utc_now() -> str:
 
 
 def _run_script(args: list[str], step: str) -> subprocess.CompletedProcess[str]:
-    """Run a leaf script, print output, and return the completed process."""
+    """Run a leaf script, print redacted output, and return the completed process."""
     result = subprocess.run(
         args,
         text=True,
         capture_output=True,
     )
     if result.stdout:
-        print(result.stdout.rstrip(), flush=True)
+        print(redact_secrets(result.stdout.rstrip()), flush=True)
     if result.stderr:
-        print(result.stderr.rstrip(), file=sys.stderr, flush=True)
+        print(redact_secrets(result.stderr.rstrip()), file=sys.stderr, flush=True)
     if result.returncode != 0:
         raise OrchestratorError(
             f"Stage step '{step}' failed with exit code {result.returncode}"
@@ -157,8 +157,7 @@ def input_stage(
     idempotency_key = str(stage_results["validate_brief"].get("idempotency_key", ""))
 
     # 2) Initialize lifecycle state
-    lifecycle_result = result_dir / "lifecycle_idea.json"
-    _run_script(
+    lifecycle_proc = _run_script(
         [
             py, "scripts/lifecycle_orchestrator.py",
             "--state-db", state_db,
@@ -173,9 +172,8 @@ def input_stage(
         ],
         step="lifecycle_idea",
     )
-    lifecycle_data = lifecycle_result.read_text(encoding="utf-8") if lifecycle_result.is_file() else "{}"
     try:
-        stage_results["lifecycle_idea"] = json.loads(lifecycle_data)
+        stage_results["lifecycle_idea"] = json.loads(lifecycle_proc.stdout) if lifecycle_proc.stdout.strip() else {}
     except json.JSONDecodeError:
         stage_results["lifecycle_idea"] = {}
 
@@ -298,8 +296,7 @@ def build_stage(
             tmpl_owner, tmpl_repo = selected.split("/", 1)
 
     # 1) Advance lifecycle to building
-    lifecycle_building = result_dir / "lifecycle_building.json"
-    _run_script(
+    lifecycle_building_proc = _run_script(
         [
             py, "scripts/lifecycle_orchestrator.py",
             "--state-db", state_db,
@@ -314,9 +311,8 @@ def build_stage(
         ],
         step="lifecycle_building",
     )
-    lifecycle_building_data = lifecycle_building.read_text(encoding="utf-8") if lifecycle_building.is_file() else "{}"
     try:
-        stage_results["lifecycle_building"] = json.loads(lifecycle_building_data)
+        stage_results["lifecycle_building"] = json.loads(lifecycle_building_proc.stdout) if lifecycle_building_proc.stdout.strip() else {}
     except json.JSONDecodeError:
         stage_results["lifecycle_building"] = {}
 
@@ -528,8 +524,7 @@ def deploy_stage(
     stage_results["quality_gate"] = _read_json_safe(quality_result)
 
     # 4) Advance lifecycle to deployed
-    lifecycle_deployed = result_dir / "lifecycle_deployed.json"
-    _run_script(
+    lifecycle_deployed_proc = _run_script(
         [
             py, "scripts/lifecycle_orchestrator.py",
             "--state-db", state_db,
@@ -544,15 +539,13 @@ def deploy_stage(
         ],
         step="lifecycle_deployed",
     )
-    lifecycle_deployed_data = lifecycle_deployed.read_text(encoding="utf-8") if lifecycle_deployed.is_file() else "{}"
     try:
-        stage_results["lifecycle_deployed"] = json.loads(lifecycle_deployed_data)
+        stage_results["lifecycle_deployed"] = json.loads(lifecycle_deployed_proc.stdout) if lifecycle_deployed_proc.stdout.strip() else {}
     except json.JSONDecodeError:
         stage_results["lifecycle_deployed"] = {}
 
     # 5) Advance lifecycle to monitored
-    lifecycle_monitored = result_dir / "lifecycle_monitored.json"
-    _run_script(
+    lifecycle_monitored_proc = _run_script(
         [
             py, "scripts/lifecycle_orchestrator.py",
             "--state-db", state_db,
@@ -567,9 +560,8 @@ def deploy_stage(
         ],
         step="lifecycle_monitored",
     )
-    lifecycle_monitored_data = lifecycle_monitored.read_text(encoding="utf-8") if lifecycle_monitored.is_file() else "{}"
     try:
-        stage_results["lifecycle_monitored"] = json.loads(lifecycle_monitored_data)
+        stage_results["lifecycle_monitored"] = json.loads(lifecycle_monitored_proc.stdout) if lifecycle_monitored_proc.stdout.strip() else {}
     except json.JSONDecodeError:
         stage_results["lifecycle_monitored"] = {}
 
@@ -649,8 +641,10 @@ def run_pipeline(
     """
     Orchestrate input_stage → build_stage → deploy_stage.
 
-    Returns a FactoryRunResult v1 dict.  Writes it to *result_file* when provided.
-    Always writes portfolio_summary.json and raises SystemExit(1) on failure.
+    Returns a FactoryRunResult v1 dict for both successful and failed runs.
+    Writes it to *result_file* when provided and always writes
+    portfolio_summary.json. Callers, including the CLI wrapper, are
+    responsible for translating a failed result into a non-zero exit status.
     """
     result_dir.mkdir(parents=True, exist_ok=True)
     timestamp_utc = _utc_now()
@@ -759,6 +753,33 @@ def run_pipeline(
         overall_status = "failed"
         failure_reason = str(exc)
         errors.append(failure_reason)
+        # Recover any step result files written to disk before the failure
+        # that are not already represented in all_steps.
+        _DISK_STEP_FILES = [
+            ("validate_brief", "validate_brief.json"),
+            ("business_gate", "business_gate.json"),
+            ("build_economics", "build_economics.json"),
+            ("build_control", "build_control.json"),
+            ("repo_discovery", "repo_discovery.json"),
+            ("create_repo", "create_repo.json"),
+            ("inject_brief", "inject_brief.json"),
+            ("business_output", "business_output_result.json"),
+            ("deploy", "deploy.json"),
+            ("deploy_health", "deploy_health.json"),
+            ("quality_gate", "quality_gate.json"),
+            ("monitoring_decision", "monitoring_decision.json"),
+            ("distribution", "distribution.json"),
+        ]
+        seen_step_names = {
+            s.get("step", "") for s in all_steps if isinstance(s, dict)
+        }
+        for step_name, fname in _DISK_STEP_FILES:
+            if step_name in seen_step_names:
+                continue
+            data = _read_json_safe(result_dir / fname)
+            if data:
+                all_steps.append(data)
+                seen_step_names.add(data.get("step", step_name))
         log_event(
             project_id=project_id,
             step=STEP_NAME,
