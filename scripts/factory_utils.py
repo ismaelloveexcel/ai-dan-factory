@@ -98,14 +98,22 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
 
 
 def validate_webhook_url(url: str) -> None:
-    """Reject non-HTTPS webhook URLs to mitigate SSRF risks.
+    """Reject invalid or non-HTTPS webhook URLs to mitigate SSRF risks.
 
-    Uses ``urllib.parse`` to validate the scheme rather than simple prefix
-    matching.  Note: this does **not** prevent redirect-based SSRF — that
-    requires server-side controls on the director endpoint.
+    Uses ``urllib.parse`` to validate the URL structure rather than simple
+    prefix matching. Requires HTTPS, a network location/hostname, and rejects
+    embedded credentials and fragments. Note: this does **not** prevent
+    redirect-based SSRF — that requires server-side controls on the director
+    endpoint.
     """
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(
             f"Webhook URL must use HTTPS (got scheme={parsed.scheme!r})"
         )
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("Webhook URL must include a valid HTTPS host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Webhook URL must not include embedded credentials")
+    if parsed.fragment:
+        raise ValueError("Webhook URL must not include a fragment")
