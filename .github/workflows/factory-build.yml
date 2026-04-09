@@ -401,8 +401,16 @@ jobs:
                   if err:
                       errors.append(f"{step_name}: {err}")
 
+          try:
+              import sys as _sys
+              _sys.path.insert(0, "scripts")
+              from factory_run_contract import CONTRACT_VERSION as _cv
+              _contract_ver = str(_cv).strip() or "v1"
+          except Exception:
+              _contract_ver = "v1"
+
           response = {
-              "contract_version": "v1",
+              "contract_version": _contract_ver,
               "project_id": project_id,
               "run_id": os.environ.get("RUN_ID", ""),
               "run_attempt": os.environ.get("RUN_ATTEMPT", ""),
