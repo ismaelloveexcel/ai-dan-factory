@@ -22,10 +22,10 @@ type ProductConfig = {
 };
 
 const FALLBACK_BRIEF: ProductBrief = {
-  productName: "Your Product",
-  problem: "Replace PRODUCT_BRIEF.md with a real customer pain point.",
-  solution: "Describe your focused solution in one clear paragraph.",
-  cta: "Get Started",
+  productName: "",
+  problem: "",
+  solution: "",
+  cta: "",
 };
 
 function escapeRegExp(value: string): string {
@@ -78,6 +78,13 @@ async function loadProductConfig(): Promise<ProductConfig> {
 export default async function Home() {
   const brief = await loadProductBrief();
   const config = await loadProductConfig();
+
+  if (!brief.productName && !config.headline) {
+    throw new Error(
+      "Missing product configuration: PRODUCT_BRIEF.md not found and product.config.json has no headline. " +
+      "Deploy will not serve a placeholder — configure your product first."
+    );
+  }
 
   const headline = config.headline || brief.productName;
   const subheading = config.subheading || `Stop struggling with ${brief.problem.slice(0, 80)}.`;
@@ -284,9 +291,16 @@ export default async function Home() {
           borderTop: "1px solid #e2e8f0",
           fontSize: "0.8rem",
           color: "#94a3b8",
+          display: "flex",
+          justifyContent: "center",
+          gap: "1.5rem",
+          flexWrap: "wrap",
         }}
       >
-        Built with AI-DAN Factory
+        <a href="/pricing" style={{ color: "#64748b", textDecoration: "none" }}>
+          Pricing
+        </a>
+        <span>Built with AI-DAN Factory</span>
       </footer>
     </main>
   );

@@ -54,6 +54,16 @@ export async function POST(req: NextRequest) {
 
     await persistLead(payload.email, source);
 
+    // Fire-and-forget welcome email (don't block lead capture on email delivery)
+    if (process.env.RESEND_API_KEY) {
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${req.nextUrl.protocol}//${req.nextUrl.host}`;
+      fetch(`${baseUrl}/api/email/welcome`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: payload.email, productName: process.env.PRODUCT_NAME || "our product" }),
+      }).catch(() => { /* email delivery is best-effort */ });
+    }
+
     return NextResponse.json(
       {
         ok: true,

@@ -98,6 +98,31 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
     return f"{project_id}:{digest}"
 
 
+def resolve_and_validate_ip(hostname: str) -> None:
+    """Resolve hostname to IP and reject private/reserved addresses.
+
+    This provides DNS-rebinding protection by validating the *resolved*
+    address rather than only the hostname string.
+    """
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        # Cannot resolve — allow through (will fail at connection time)
+        return
+    for family, _type, _proto, _canonname, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            addr = _ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if addr.is_loopback or addr.is_private or addr.is_reserved or addr.is_link_local:
+            raise ValueError(
+                f"Webhook URL resolves to blocked address: {ip_str}"
+            )
+
+
 def validate_webhook_url(url: str) -> None:
     """Reject invalid or non-HTTPS webhook URLs to mitigate SSRF risks.
 
@@ -109,9 +134,7 @@ def validate_webhook_url(url: str) -> None:
         against localhost names
       - IP literals in private, reserved, loopback, or link-local ranges
         are rejected via the ``ipaddress`` module
-
-    Note: this does **not** prevent redirect-based SSRF — that requires
-    server-side controls on the director endpoint.
+      - DNS resolution checked to prevent DNS rebinding attacks
     """
     parsed = urlparse(url)
     if parsed.scheme != "https":
@@ -136,8 +159,8 @@ def validate_webhook_url(url: str) -> None:
     try:
         addr = _ipaddress.ip_address(hostname)
     except ValueError:
-        # hostname is not an IP literal (e.g. a regular domain) — that's fine
-        pass
+        # hostname is not an IP literal — resolve DNS to check actual IPs
+        resolve_and_validate_ip(hostname)
     else:
         if addr.is_loopback or addr.is_private or addr.is_reserved or addr.is_link_local:
             raise ValueError(

@@ -82,6 +82,7 @@ class FactoryStateStore:
               workflow_url TEXT DEFAULT '',
               failure_reason TEXT DEFAULT '',
               error_summary TEXT DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
               updated_at TEXT NOT NULL
             );
 

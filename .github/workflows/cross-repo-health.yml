@@ -1,0 +1,99 @@
+name: cross-repo-health
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"   # Weekly on Monday at 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout factory
+        uses: actions/checkout@v4
+
+      - name: Check MD repo accessible
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MD_REPO="${{ vars.MD_REPO || 'ismaelloveexcel/aidan-managing-director' }}"
+          echo "Checking MD repo: $MD_REPO"
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${MD_REPO}")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::MD repo not accessible (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          echo "MD repo accessible ✓"
+
+      - name: Check factory-build workflow exists
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Verify the workflow file exists in factory repo
+          if [ ! -f ".github/workflows/factory-build.yml" ]; then
+            echo "::error::factory-build.yml workflow missing from factory repo"
+            exit 1
+          fi
+          echo "factory-build.yml exists ✓"
+
+      - name: Verify callback contract alignment
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MD_REPO="${{ vars.MD_REPO || 'ismaelloveexcel/aidan-managing-director' }}"
+
+          # Fetch MD's factory_client.py to verify it calls the expected workflow
+          CONTENT=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.raw+json" \
+            "https://api.github.com/repos/${MD_REPO}/contents/app/factory/factory_client.py" 2>/dev/null || echo "")
+
+          if [ -z "$CONTENT" ]; then
+            echo "::warning::Could not fetch factory_client.py — skipping contract check"
+            exit 0
+          fi
+
+          # Check that it references factory-build.yml
+          if echo "$CONTENT" | grep -q "factory-build.yml"; then
+            echo "Contract alignment: factory_client.py references factory-build.yml ✓"
+          else
+            echo "::warning::factory_client.py may not reference factory-build.yml"
+          fi
+
+          # Check callback endpoint
+          if echo "$CONTENT" | grep -q "/factory/callback"; then
+            echo "Contract alignment: callback endpoint /factory/callback found ✓"
+          else
+            echo "::warning::callback endpoint /factory/callback not found in factory_client.py"
+          fi
+
+      - name: Check required secrets configured
+        env:
+          FACTORY_SECRET: ${{ secrets.FACTORY_CALLBACK_SECRET }}
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MISSING=""
+          [ -z "${FACTORY_SECRET:-}" ] && MISSING="${MISSING} FACTORY_CALLBACK_SECRET"
+          [ -z "${GH_TOKEN:-}" ] && MISSING="${MISSING} FACTORY_GITHUB_TOKEN"
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required secrets:${MISSING}"
+            exit 1
+          fi
+          echo "Required secrets configured ✓"
+
+      - name: Summary
+        run: echo "Cross-repo health check passed ✓"

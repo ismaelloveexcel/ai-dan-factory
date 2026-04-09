@@ -2,7 +2,7 @@ name: factory-autonomous-runner
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       run_full_test_suite:
