@@ -12,13 +12,22 @@ import time
 import urllib.error
 import urllib.request
 
-from factory_utils import log_event, maybe_write_result
+from factory_utils import log_event, maybe_write_result, redact_secrets
 
 STEP_NAME = "notify_director"
 _DEFAULT_DIRECTOR_BASE_URL_ENV = "FACTORY_BASE_URL"
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
 _RETRY_DELAY_SECONDS = 2
+_ALLOWED_SCHEMES = ("https://",)
+
+
+def _validate_url(url: str) -> None:
+    """Reject non-HTTPS URLs to prevent SSRF via redirect or misconfiguration."""
+    if not any(url.startswith(s) for s in _ALLOWED_SCHEMES):
+        raise ValueError(
+            f"Director webhook URL must use HTTPS (got {url[:40]}...)"
+        )
 
 
 def _post_webhook(
@@ -30,6 +39,7 @@ def _post_webhook(
     timeout: int = 30,
 ) -> None:
     url = director_base_url.rstrip("/") + "/factory/webhook"
+    _validate_url(url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     last_exc: Exception | None = None
@@ -185,7 +195,7 @@ def main() -> None:
         maybe_write_result(args.result_file, result)
         log_event(project_id=project_id, step=STEP_NAME, status="success", mode=mode)
     except Exception as exc:
-        error_message = str(exc)
+        error_message = redact_secrets(str(exc))
         log_event(
             project_id=project_id,
             step=STEP_NAME,
