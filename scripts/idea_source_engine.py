@@ -12,20 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from factory_utils import maybe_write_result
+from factory_run_contract import BUILD_BRIEF_V1_REQUIRED_FIELDS
 
-REQUIRED_FIELDS = (
-    "project_id",
-    "product_name",
-    "problem",
-    "solution",
-    "cta",
-    "source_type",
-    "reference_context",
-    "demand_level",
-    "monetization_proof",
-    "market_saturation",
-    "differentiation",
-)
+REQUIRED_FIELDS = BUILD_BRIEF_V1_REQUIRED_FIELDS
 
 
 class IdeaSourceError(Exception):

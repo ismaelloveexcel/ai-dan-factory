@@ -364,7 +364,7 @@ def full_dry_run_pipeline() -> None:
         business = read_json(business_output)
         for field in (
             "headline",
-            "CTA",
+            "cta",
             "monetization_model",
             "pricing_suggestion",
             "offer_structure",

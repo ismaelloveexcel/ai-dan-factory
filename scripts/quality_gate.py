@@ -77,7 +77,7 @@ def _score_ux_simplicity(brief: dict[str, Any], business_output: dict[str, Any] 
     )
     if has_brief_fields:
         score += 1
-    if business_output and business_output.get("headline") and business_output.get("CTA"):
+    if business_output and business_output.get("headline") and business_output.get("cta"):
         score += 1
     return score
 

@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-from factory_utils import log_event, maybe_write_result
+from factory_utils import log_event, maybe_write_result, redact_secrets, validate_webhook_url
 
 STEP_NAME = "notify_director"
 _DEFAULT_DIRECTOR_BASE_URL_ENV = "FACTORY_BASE_URL"
@@ -30,6 +30,7 @@ def _post_webhook(
     timeout: int = 30,
 ) -> None:
     url = director_base_url.rstrip("/") + "/factory/webhook"
+    validate_webhook_url(url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     last_exc: Exception | None = None
@@ -44,7 +45,7 @@ def _post_webhook(
                     status="webhook_sent",
                     mode=mode,
                     http_status=resp.status,
-                    director_url=url,
+                    director_url=redact_secrets(url),
                 )
             return
         except urllib.error.HTTPError as exc:
@@ -185,7 +186,7 @@ def main() -> None:
         maybe_write_result(args.result_file, result)
         log_event(project_id=project_id, step=STEP_NAME, status="success", mode=mode)
     except Exception as exc:
-        error_message = str(exc)
+        error_message = redact_secrets(str(exc))
         log_event(
             project_id=project_id,
             step=STEP_NAME,

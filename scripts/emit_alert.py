@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-from factory_utils import log_event, maybe_write_result
+from factory_utils import log_event, maybe_write_result, redact_secrets, validate_webhook_url
 
 STEP_NAME = "emit_alert"
 _DEFAULT_DIRECTOR_BASE_URL_ENV = "FACTORY_BASE_URL"
@@ -30,6 +30,7 @@ def _post_webhook(
 ) -> None:
     """POST alert payload to Managing Director webhook (best-effort)."""
     url = director_base_url.rstrip("/") + "/factory/webhook"
+    validate_webhook_url(url)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
 
     for attempt in range(_MAX_RETRIES):
@@ -43,7 +44,7 @@ def _post_webhook(
                     status="webhook_sent",
                     mode="production",
                     http_status=resp.status,
-                    director_url=url,
+                    director_url=redact_secrets(url),
                 )
             return
         except urllib.error.HTTPError as exc:
@@ -146,7 +147,7 @@ def main() -> None:
             step=STEP_NAME,
             status="webhook_failed",
             mode=mode,
-            error=str(exc),
+            error=redact_secrets(str(exc)),
         )
 
 

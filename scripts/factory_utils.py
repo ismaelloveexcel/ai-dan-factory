@@ -10,11 +10,12 @@ import json
 import os
 import re
 import tempfile
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL")
+SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "FACTORY_GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL", "FACTORY_BASE_URL")
 
 
 def utc_timestamp() -> str:
@@ -64,10 +65,16 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def atomic_write_text(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp_file:
-        tmp_file.write(contents)
-        temp_path = Path(tmp_file.name)
-    temp_path.replace(path)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp_file:
+            tmp_file.write(contents)
+            temp_path = Path(tmp_file.name)
+        temp_path.replace(path)
+    except BaseException:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        raise
 
 
 def maybe_write_result(result_file: str, payload: dict[str, Any]) -> None:
@@ -88,3 +95,25 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
     digest_source = json.dumps(brief, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
     return f"{project_id}:{digest}"
+
+
+def validate_webhook_url(url: str) -> None:
+    """Reject invalid or non-HTTPS webhook URLs to mitigate SSRF risks.
+
+    Uses ``urllib.parse`` to validate the URL structure rather than simple
+    prefix matching. Requires HTTPS, a network location/hostname, and rejects
+    embedded credentials and fragments. Note: this does **not** prevent
+    redirect-based SSRF — that requires server-side controls on the director
+    endpoint.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(
+            f"Webhook URL must use HTTPS (got scheme={parsed.scheme!r})"
+        )
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("Webhook URL must include a valid HTTPS host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Webhook URL must not include embedded credentials")
+    if parsed.fragment:
+        raise ValueError("Webhook URL must not include a fragment")

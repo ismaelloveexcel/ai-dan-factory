@@ -21,6 +21,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -38,7 +39,9 @@ jobs:
         run: |
           set -euo pipefail
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-autonomous-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
           export SELECTED_BRIEF="$RESULT_DIR/selected_brief.json"
+          echo "SELECTED_BRIEF=$SELECTED_BRIEF" >> "$GITHUB_ENV"
           STATE_DB="$RESULT_DIR/lifecycle.sqlite"
           TIMESTAMP_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -88,9 +91,6 @@ jobs:
             python scripts/run_factory_tests.py > "$RESULT_DIR/test_suite.log" 2>&1
             cat "$RESULT_DIR/test_suite.log"
           fi
-
-          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
-          echo "SELECTED_BRIEF=$SELECTED_BRIEF" >> "$GITHUB_ENV"
 
       - name: Upload autonomous artifacts
         if: always()

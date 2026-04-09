@@ -77,13 +77,24 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _run_script(args: list[str], step: str) -> subprocess.CompletedProcess[str]:
+def _run_script(
+    args: list[str], step: str, *, timeout: int = 600,
+) -> subprocess.CompletedProcess[str]:
     """Run a leaf script, print redacted output, and return the completed process."""
-    result = subprocess.run(
-        args,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            args,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = ""
+        if exc.stdout:
+            partial = f" Partial stdout: {redact_secrets(str(exc.stdout)[:500])}"
+        raise OrchestratorError(
+            f"Stage step '{step}' timed out after {timeout}s.{partial}"
+        ) from exc
     if result.stdout:
         print(redact_secrets(result.stdout.rstrip()), flush=True)
     if result.stderr:

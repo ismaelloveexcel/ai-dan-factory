@@ -48,14 +48,23 @@ Per-run artifacts:
 - step-level JSON files:
   - `normalize_inputs.json`
   - `validate_brief.json`
+  - `normalized_brief.json`
   - `business_gate.json`
+  - `build_economics.json`
+  - `build_control.json`
+  - `repo_discovery.json`
   - `create_repo.json`
+  - `ai_enhance.json`
   - `inject_brief.json`
+  - `business_output.json`
   - `business_output_result.json`
   - `deploy.json`
   - `deploy_health.json`
+  - `quality_gate.json`
   - `monitoring_decision.json`
+  - `distribution_result.json`
   - `portfolio_summary.json`
+  - `notify_director.json`
   - `alert_payload.json` (on failure)
 
 ## 5) Decision semantics
