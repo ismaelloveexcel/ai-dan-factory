@@ -18,7 +18,7 @@ The operator can:
 
 The operator cannot bypass:
 - input normalization
-- business gate decision
+- execution gate decision
 - lifecycle transition rules
 - result artifact generation
 
@@ -27,7 +27,7 @@ The operator cannot bypass:
 Execution cannot continue if any of these fail:
 1. Input contract normalization (`normalize_workflow_inputs.py`)
 2. Build brief validation (`validate_brief.py`)
-3. Unified business gate (`validate_business_gate.py`)  
+3. Unified execution gate (`validate_business_gate.py`)  
    - only `APPROVE` allows build/deploy
 4. Lifecycle transition checks (`lifecycle_orchestrator.py`)
 5. Deployment health gate (`deploy_health_check.py`) in non-tests runs
@@ -60,14 +60,16 @@ Per-run artifacts:
 
 ## 5) Decision semantics
 
-Business gate:
+Execution gate:
 - `APPROVE` => continue
 - `HOLD` or `REJECT` => stop build/deploy
 
-Monitoring decision:
+Monitoring recommendation signals:
 - `kill_candidate=true` => prune candidate
 - `optimize_candidate=true` => iteration candidate
 - `scale_candidate=true` => scale candidate
+
+These signals are advisory execution outputs for Repo 1 to evaluate; they are not final business authority in this repository.
 
 ## 6) Failure handling
 
