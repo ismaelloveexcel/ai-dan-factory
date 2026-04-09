@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Evaluate execution signals and emit kill/optimize/scale recommendations.
+Evaluate project execution signals and emit portfolio disposition recommendations.
 
-This script produces advisory execution signals for downstream control-plane
-consumers. It does not establish business source-of-truth ownership.
+This script produces execution-plane signals (kill_candidate, optimize_candidate,
+scale_candidate) that the AI-DAN control plane (Repo 1) can use to inform
+its business lifecycle decisions.  Final business decisions remain with the
+control plane operator — this script only surfaces signal-based recommendations
+based on observed traffic, activation, and revenue data.
 """
 
 from __future__ import annotations
@@ -67,7 +70,7 @@ def normalize_signal(payload: dict[str, Any], field_name: str, allowed: set[str]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate monitoring signals and emit execution recommendation")
+    parser = argparse.ArgumentParser(description="Evaluate monitoring signals and emit portfolio decision")
     parser.add_argument("--state-db", required=True, help="Path to lifecycle SQLite database")
     parser.add_argument("--run-id", default="", help="Workflow run id")
     parser.add_argument("--run-attempt", default="", help="Workflow run attempt")
@@ -113,7 +116,7 @@ def main() -> None:
         if revenue_signal_status not in ALLOWED_REVENUE:
             raise MonitorDecisionError("revenue_signal_status must be NONE/WEAK/STRONG")
 
-        execution_recommendation = decide(traffic_signal, activation_metric, revenue_signal_status)
+        portfolio_decision = decide(traffic_signal, activation_metric, revenue_signal_status)
 
         store = StateStore(args.state_db)
         store.record_monitoring_signal(
@@ -123,14 +126,14 @@ def main() -> None:
             traffic_signal=traffic_signal,
             activation_metric=activation_metric,
             revenue_signal_status=revenue_signal_status,
-            portfolio_decision=execution_recommendation,
+            portfolio_decision=portfolio_decision,
             timestamp_utc=timestamp_utc,
         )
 
         target_state = ""
-        if execution_recommendation == "scale_candidate":
+        if portfolio_decision == "scale_candidate":
             target_state = "scaled"
-        elif execution_recommendation == "kill_candidate":
+        elif portfolio_decision == "kill_candidate":
             target_state = "killed"
 
         if target_state:
@@ -140,12 +143,12 @@ def main() -> None:
                     run_attempt=run_attempt,
                     project_id=project_id,
                     to_state=target_state,
-                    reason=f"Monitoring recommendation: {execution_recommendation}",
+                    reason=f"Monitoring decision: {portfolio_decision}",
                     metadata={
                         "traffic_signal": traffic_signal,
                         "activation_metric": activation_metric,
                         "revenue_signal_status": revenue_signal_status,
-                        "execution_recommendation": execution_recommendation,
+                        "portfolio_decision": portfolio_decision,
                     },
                     timestamp_utc=timestamp_utc,
                 )
@@ -160,11 +163,10 @@ def main() -> None:
             "traffic_signal": traffic_signal,
             "activation_metric": activation_metric,
             "revenue_signal_status": revenue_signal_status,
-            "execution_recommendation": execution_recommendation,
-            "portfolio_decision": execution_recommendation,
-            "kill_candidate": execution_recommendation == "kill_candidate",
-            "optimize_candidate": execution_recommendation == "optimize_candidate",
-            "scale_candidate": execution_recommendation == "scale_candidate",
+            "portfolio_decision": portfolio_decision,
+            "kill_candidate": portfolio_decision == "kill_candidate",
+            "optimize_candidate": portfolio_decision == "optimize_candidate",
+            "scale_candidate": portfolio_decision == "scale_candidate",
             "status": "success",
             "timestamp_utc": timestamp_utc,
         }

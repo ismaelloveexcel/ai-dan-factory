@@ -1,59 +1,64 @@
-# AI-DAN Factory — Execution Plane
+# AI-DAN Factory — Automated Product Factory (Execution Plane)
 
-This repository is the AI-DAN execution plane. It executes approved BuildBrief payloads, performs deterministic execution stages, and returns canonical execution artifacts.
+A zero-touch product factory that validates ideas, creates repositories, builds products, deploys them, evaluates quality, and generates distribution content — all from a single BuildBrief JSON payload.
 
-This repository is not the business control plane. Business/portfolio authority remains in `aidan-managing-director`.
+> **Execution Plane**: This repository is the *execution plane* of the AI-DAN system.
+> It receives `BuildBrief v1` payloads from the AI-DAN control plane (Repo 1), runs
+> deterministic pipeline stages via `scripts/factory_orchestrator.py`, and returns
+> `FactoryRunResult v1` results.  Business decisions and project-level truth live in
+> Repo 1; this repo owns execution state only.
 
 ## Overview
 
-The execution plane runs a strict execution pipeline:
+The factory executes a strict pipeline orchestrated by `scripts/factory_orchestrator.py`:
 
 ```
-BuildBrief → Validate → Gate → Economics → Control → Repo Discovery →
-Create Repo → Inject → Deploy → Health Check → Quality Gate →
-Execution Signals → Distribution Artifacts → FactoryRunResult
+BuildBrief → input_stage (Validate → Score → Gate → Economics → Control → Discovery)
+           → build_stage (Create Repo → Inject → Business Output)
+           → deploy_stage (Deploy → Health → Quality → Monitor → Distribute)
+           → FactoryRunResult (factory-response.json)
 ```
 
-Execution stages are deterministic and auditable. Repo discovery/template selection remains first-class and can alter the template source when high-confidence external matches are found.
+Every decision is deterministic and auditable. AI enhancement via OpenAI generates high-quality marketing copy when `OPENAI_API_KEY` is available; otherwise, deterministic templates are used (marked as reduced quality).
 
 ## Architecture
 
 ```text
 .
 ├── .github/workflows/
-│   ├── factory-build.yml              # Thin workflow wrapper around Python orchestrator
+│   ├── factory-build.yml              # Thin main pipeline — delegates to factory_orchestrator.py
 │   ├── factory-autonomous-runner.yml  # Scheduled idea source/score loop
 │   ├── factory-ci.yml                 # CI tests on PRs and pushes
 │   └── factory-monitor.yml            # Scheduled portfolio monitoring
 ├── scripts/
-│   ├── validate_brief.py              # Phase 1: BuildBrief validation + normalization
-│   ├── validate_business_gate.py      # Phase 2: Unified business gate (APPROVE/HOLD/REJECT)
-│   ├── scoring_engine.py              # Phase 2: Deterministic scoring (0-10)
-│   ├── build_economics.py             # Phase 3: ROI evaluation before build
-│   ├── build_control.py               # Phase 4: Rate limiting + queue priority
-│   ├── repo_discovery_engine.py       # Phase 4.5: GitHub repo discovery + template selection
-│   ├── create_project.py              # Phase 5: GitHub repo creation from template
-│   ├── ai_enhance.py                  # Phase 5.5: AI-generated marketing copy (OpenAI)
-│   ├── inject_brief.py                # Phase 6: Brief + AI copy injection into product files
-│   ├── deploy.py                      # Phase 7: Vercel deployment trigger
-│   ├── deploy_health_check.py         # Phase 7.5: Post-deploy health verification
-│   ├── quality_gate.py                # Phase 8: Product quality scoring gate (6 dimensions)
-│   ├── business_output_engine.py      # Phase 9: Monetization payload generation
-│   ├── distribution_engine.py         # Phase 10: Distribution content + outreach
-│   ├── monitor_and_decide.py          # Phase 11: Signal evaluation + decisions
-│   ├── portfolio_summary.py           # Phase 11.5: Portfolio bucketing
-│   ├── lifecycle_orchestrator.py      # Strict execution-run state transitions
-│   ├── factory_orchestrator.py        # Main execution orchestrator (stage sequencing)
-│   ├── factory_run_contract.py        # BuildBrief/FactoryRunResult contract helpers
+│   ├── factory_orchestrator.py        # ENTRYPOINT: orchestrates all three stages
+│   ├── factory_run_contract.py        # Contract constants: BuildBrief v1, FactoryRunResult v1
+│   ├── validate_brief.py              # Stage input: BuildBrief validation + normalization
+│   ├── validate_business_gate.py      # Stage input: Unified business gate (APPROVE/HOLD/REJECT)
+│   ├── scoring_engine.py              # Stage input: Deterministic scoring (0-10)
+│   ├── build_economics.py             # Stage input: ROI evaluation before build
+│   ├── build_control.py               # Stage input: Rate limiting + queue priority
+│   ├── repo_discovery_engine.py       # Stage input: GitHub repo discovery + template selection
+│   ├── create_project.py              # Stage build: GitHub repo creation from template
+│   ├── ai_enhance.py                  # Stage build: AI-generated marketing copy (OpenAI)
+│   ├── inject_brief.py                # Stage build: Brief + AI copy injection into product files
+│   ├── deploy.py                      # Stage deploy: Vercel deployment trigger
+│   ├── deploy_health_check.py         # Stage deploy: Post-deploy health verification
+│   ├── quality_gate.py                # Stage deploy: Product quality scoring gate (6 dimensions)
+│   ├── business_output_engine.py      # Stage build: Monetization payload generation
+│   ├── distribution_engine.py         # Stage deploy: Distribution content + outreach
+│   ├── monitor_and_decide.py          # Stage deploy: Signal evaluation + recommendations
+│   ├── portfolio_summary.py           # Stage deploy: Portfolio bucketing
+│   ├── lifecycle_orchestrator.py      # Strict state machine transitions
 │   ├── state_store.py                 # Persistent SQLite lifecycle store
 │   ├── idea_source_engine.py          # Autonomous idea selection
 │   ├── factory_utils.py               # Shared utilities
 │   ├── normalize_workflow_inputs.py   # Workflow input normalization
 │   ├── emit_alert.py                  # Failure alert payloads
-│   └── run_factory_tests.py           # 10-stage automated test suite
+│   └── run_factory_tests.py           # 11-stage automated test suite
 ├── templates/saas-template/           # Next.js 14 conversion-optimized landing page
 ├── test_data/                         # Test payloads and autonomous ideas
-├── data/lifecycle.sqlite              # Persistent execution-run state database
+├── data/lifecycle.sqlite              # Persistent lifecycle database
 ├── docs/                              # Integration contracts and checklists
 └── .env.example                       # Required environment variables
 ```
@@ -85,7 +90,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
    - `dry_run`: `true` (first time)
 4. Verify success, then re-run with `dry_run`: `false`
 
-## Execution Stages
+## Pipeline Phases
 
 ### Phase 1 — BuildBrief Validation
 Validates and normalizes input. Required fields:
@@ -220,27 +225,16 @@ GitHub Actions workflows:
  1. Checkout + setup
  2. Normalize input contract
  3. Run tests only (if enabled)
- 4. Initialize lifecycle (idea)
- 5. Validate BuildBrief
- 6. Business gate (APPROVE required)
- 7. Build economics evaluation
- 8. Build control check
- 8.7. Repo discovery + template selection
- 9. Lifecycle → building
-10. Create repository
-11. AI enhancement (generate copy)
-12. Inject BuildBrief + AI copy
-13. Generate business output
-14. Trigger deployment
-15. Health check
-16. Quality gate (6-dimension scoring)
-17. Lifecycle → deployed → monitored
-18. Monitor & decide
-19. Distribution execution
-20. Portfolio summary
-21. Finalize response
-22. Alert on failure
-23. Upload artifacts
+ 4. Execute factory pipeline via factory_orchestrator.py:
+    a. input_stage: validate brief → business gate → economics → control → repo discovery
+    b. build_stage: lifecycle → create repo → inject brief → business output
+    c. deploy_stage: deploy → health check → quality gate → monitor → distribute
+ 5. Read orchestrator outputs (set env vars)
+ 6. Notify Managing Director
+ 7. Portfolio summary
+ 8. Finalize factory-response.json
+ 9. Emit alert on failure
+10. Upload artifacts
 ```
 
 ## Automated Testing
@@ -249,7 +243,7 @@ GitHub Actions workflows:
 python3 scripts/run_factory_tests.py
 ```
 
-10-stage test suite:
+11-stage test suite:
 1. Script syntax checks (all scripts)
 2. Payload schema validation
 3. Idea source + scoring tests
@@ -260,6 +254,7 @@ python3 scripts/run_factory_tests.py
 8. Quality gate + economics + distribution + control tests
 9. End-to-end pipeline simulation
 10. Repo discovery + template selection tests (scoring, exclusion filters, fixture scenarios, CLI)
+11. Factory orchestrator tests (contract constants, CLI failure handling)
 
 ## Monetization Readiness
 

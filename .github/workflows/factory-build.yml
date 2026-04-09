@@ -73,7 +73,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      factory_response: ${{ steps.run_orchestrator.outputs.factory_response }}
+      factory_response: ${{ steps.finalize.outputs.factory_response }}
     env:
       TEMPLATE_PROJECT_DIR: templates/saas-template
       RESULT_ARTIFACT_NAME: factory-result-${{ github.run_id }}-${{ github.run_attempt }}
@@ -89,65 +89,402 @@ jobs:
 
       - name: 3) Initialize run context
         env:
+          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
           FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
           set -euo pipefail
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+          BRIEF_FILE="$(mktemp "$RUNNER_TEMP/build-brief-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          NORMALIZED_INPUTS_FILE="$(mktemp "$RUNNER_TEMP/normalized-inputs-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX.json")"
+          TESTS_ONLY_LOG_FILE="$RESULT_DIR/tests_only.log"
           STATE_DB="data/lifecycle.sqlite"
           WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TIMESTAMP_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          printf '%s' "$BUILD_BRIEF_JSON" > "$BRIEF_FILE"
 
           echo "::add-mask::$FACTORY_GITHUB_TOKEN"
           echo "::add-mask::$VERCEL_DEPLOY_HOOK_URL"
 
           echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+          echo "BRIEF_FILE=$BRIEF_FILE" >> "$GITHUB_ENV"
+          echo "NORMALIZED_INPUTS_FILE=$NORMALIZED_INPUTS_FILE" >> "$GITHUB_ENV"
+          echo "TESTS_ONLY_LOG_FILE=$TESTS_ONLY_LOG_FILE" >> "$GITHUB_ENV"
           echo "STATE_DB=$STATE_DB" >> "$GITHUB_ENV"
           echo "WORKFLOW_URL=$WORKFLOW_URL" >> "$GITHUB_ENV"
           echo "TIMESTAMP_UTC=$TIMESTAMP_UTC" >> "$GITHUB_ENV"
           echo "RUN_ID=${{ github.run_id }}" >> "$GITHUB_ENV"
           echo "RUN_ATTEMPT=${{ github.run_attempt }}" >> "$GITHUB_ENV"
 
-      - name: 4) Run factory orchestrator
-        id: run_orchestrator
+      - name: 4) Normalize and validate input contract
         env:
-          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
-          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
-          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
-          TEMPLATE_OWNER: ${{ github.repository_owner }}
-          TEMPLATE_REPO: ${{ github.event.repository.name }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          RAW_PROJECT_ID: ${{ inputs.project_id }}
+          RAW_BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
+          RAW_DRY_RUN: ${{ inputs.dry_run }}
+          RAW_RUN_AUTOMATED_TESTS_ONLY: ${{ inputs.run_automated_tests_only }}
+          RAW_TEST_MODE: ${{ inputs.test_mode }}
         run: |
           set -euo pipefail
+          python scripts/normalize_workflow_inputs.py \
+            --project-id "$RAW_PROJECT_ID" \
+            --build-brief-json "$RAW_BUILD_BRIEF_JSON" \
+            --dry-run "$RAW_DRY_RUN" \
+            --run-automated-tests-only "$RAW_RUN_AUTOMATED_TESTS_ONLY" \
+            --test-mode "$RAW_TEST_MODE" \
+            --normalized-output "$NORMALIZED_INPUTS_FILE" \
+            --result-file "$RESULT_DIR/normalize_inputs.json"
+
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path(os.environ["NORMALIZED_INPUTS_FILE"]).read_text(encoding="utf-8"))
+
+          def as_bool(v: object) -> str:
+              return "true" if bool(v) else "false"
+
+          print(f"PROJECT_ID_INPUT={data['project_id']}")
+          print(f"RUN_MODE={data['run_mode']}")
+          print(f"EFFECTIVE_DRY_RUN={as_bool(data.get('dry_run_effective'))}")
+          print(f"RUN_AUTOMATED_TESTS_ONLY_EFFECTIVE={as_bool(data.get('run_automated_tests_only_effective'))}")
+          print(f"DEPRECATED_TEST_MODE_REQUESTED={as_bool(data.get('deprecated_test_mode_requested'))}")
+          PY
+
+          if [ "${DEPRECATED_TEST_MODE_REQUESTED}" = "true" ]; then
+            echo "::warning::Input 'test_mode' is deprecated. Use 'run_automated_tests_only' instead."
+          fi
+
+      - name: 5) Run automated tests only
+        if: env.RUN_MODE == 'tests_only'
+        run: |
+          set -euo pipefail
+          set +e
+          python scripts/run_factory_tests.py > "$TESTS_ONLY_LOG_FILE" 2>&1
+          TEST_EXIT=$?
+          set -e
+
+          STEP_STATUS="success"
+          STEP_ERROR=""
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            STEP_STATUS="failed"
+            STEP_ERROR="Automated test suite failed. See tests_only.log in result artifact."
+          fi
+
+          TEST_EXIT="$TEST_EXIT" STEP_STATUS="$STEP_STATUS" STEP_ERROR="$STEP_ERROR" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "project_id": os.environ.get("PROJECT_ID_INPUT", "unknown"),
+              "step": "automated_tests_only",
+              "status": os.environ["STEP_STATUS"],
+              "mode": "tests_only",
+              "error": os.environ["STEP_ERROR"],
+          }
+          if not payload["error"]:
+              payload.pop("error")
+          p = Path(os.environ["RESULT_DIR"]) / "automated_tests_only.json"
+          p.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+          PY
+
+          cat "$TESTS_ONLY_LOG_FILE"
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            exit "$TEST_EXIT"
+          fi
+
+      - name: 6) Execute factory pipeline
+        if: env.RUN_MODE != 'tests_only'
+        env:
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
           python scripts/factory_orchestrator.py \
-            --project-id "${{ inputs.project_id }}" \
-            --build-brief-json "$BUILD_BRIEF_JSON" \
-            --dry-run "${{ inputs.dry_run }}" \
-            --run-automated-tests-only "${{ inputs.run_automated_tests_only }}" \
-            --test-mode "${{ inputs.test_mode }}" \
-            --traffic-signal "${{ inputs.traffic_signal }}" \
-            --activation-metric "${{ inputs.activation_metric }}" \
-            --revenue-signal-status "${{ inputs.revenue_signal_status }}" \
-            --result-dir "$RESULT_DIR" \
+            --brief-file "$BRIEF_FILE" \
+            --project-id "$PROJECT_ID_INPUT" \
             --state-db "$STATE_DB" \
+            --result-dir "$RESULT_DIR" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT" \
             --workflow-url "$WORKFLOW_URL" \
-            --timestamp-utc "$TIMESTAMP_UTC" \
-            --template-project-dir "$TEMPLATE_PROJECT_DIR" \
-            --github-repository-owner "${{ github.repository_owner }}" \
-            --github-repository-name "${{ github.event.repository.name }}" \
-            --result-artifact-name "$RESULT_ARTIFACT_NAME"
+            --template-owner "${{ github.repository_owner }}" \
+            --template-repo "${{ github.event.repository.name }}" \
+            --repo-org "${{ github.repository_owner }}" \
+            --traffic-signal "${{ inputs.traffic_signal }}" \
+            --activation-metric "${{ inputs.activation_metric }}" \
+            --revenue-signal-status "${{ inputs.revenue_signal_status }}" \
+            --result-file "$RESULT_DIR/factory-response.json" \
+            $DRY_RUN_FLAG
 
-      - name: 5) Emit alert payload on failure
+      - name: 7) Read orchestrator outputs
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+          from pathlib import Path
+
+          result_dir = os.environ.get("RESULT_DIR", "")
+          if not result_dir:
+              print("DEPLOYMENT_URL=")
+          else:
+              p = Path(result_dir) / "factory-response.json"
+              if p.is_file():
+                  try:
+                      data = json.loads(p.read_text(encoding="utf-8"))
+                      print(f"DEPLOYMENT_URL={data.get('deployment_url', '')}")
+                  except (json.JSONDecodeError, OSError):
+                      print("DEPLOYMENT_URL=")
+              else:
+                  print("DEPLOYMENT_URL=")
+          PY
+
+      - name: 17.6) Notify Managing Director
+        if: always()
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
+          PROJECT_ID_INPUT: ${{ env.PROJECT_ID_INPUT }}
+          RUN_ID: ${{ env.RUN_ID }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+          DEPLOYMENT_URL: ${{ env.DEPLOYMENT_URL }}
+          RUN_MODE: ${{ env.RUN_MODE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+            mkdir -p "$RESULT_DIR"
+          fi
+
+          HEALTH_RESULT="$(python - <<'PY'
+          import json, os, sys
+          run_mode = os.environ.get("RUN_MODE", "")
+          p = os.path.join(os.environ.get("RESULT_DIR", ""), "deploy_health.json")
+          try:
+              with open(p, "r", encoding="utf-8") as f:
+                  health_status = json.load(f).get("health_status", "unknown")
+              build_status = "succeeded" if health_status == "healthy" else "failed"
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"[notify] deploy_health.json read error: {exc}", file=sys.stderr)
+              if run_mode == "tests_only":
+                  health_status = "tests_only"
+                  build_status = "succeeded"
+              else:
+                  health_status = "unknown"
+                  build_status = "use_job_status"
+          print(f"{build_status}:{health_status}")
+          PY
+          )"
+          BUILD_STATUS="${HEALTH_RESULT%%:*}"
+          HEALTH_STATUS_DETAIL="${HEALTH_RESULT#*:}"
+
+          # Fall back to job status when deploy_health.json was not written
+          if [ "$BUILD_STATUS" = "use_job_status" ]; then
+            if [ "${{ job.status }}" = "success" ]; then
+              BUILD_STATUS="succeeded"
+            else
+              BUILD_STATUS="failed"
+            fi
+          fi
+
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          REPO_URL_VAL="$(python - <<'PY'
+          import json, os, sys
+          p = os.path.join(os.environ.get("RESULT_DIR", ""), "create_repo.json")
+          try:
+              with open(p, "r", encoding="utf-8") as f:
+                  print(json.load(f).get("repo_url", ""))
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"[notify] create_repo.json read error: {exc}", file=sys.stderr)
+              print("")
+          PY
+          )"
+
+          NOTIFY_ARGS=(
+            --project-id "${PROJECT_ID_INPUT:-unknown}"
+            --run-id "${RUN_ID:-${{ github.run_id }}}"
+            --status "$BUILD_STATUS"
+            --deploy-url "${DEPLOYMENT_URL:-}"
+            --repo-url "$REPO_URL_VAL"
+            --result-file "$RESULT_DIR/notify_director.json"
+          )
+          if [ "$BUILD_STATUS" = "failed" ]; then
+            NOTIFY_ARGS+=(--error "Build failed with health_status: ${HEALTH_STATUS_DETAIL}; check deploy_health.json and step logs for details")
+          fi
+          if [ -n "$DRY_RUN_FLAG" ]; then
+            NOTIFY_ARGS+=(--dry-run)
+          fi
+
+          python scripts/notify_director.py "${NOTIFY_ARGS[@]}" || true
+
+      - name: 18) Portfolio simplified summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+            mkdir -p "$RESULT_DIR"
+          fi
+          python scripts/portfolio_summary.py \
+            --state-db "$STATE_DB" \
+            --result-file "$RESULT_DIR/portfolio_summary.json" || true
+
+      - name: 19) Finalize factory response
+        if: always()
+        id: finalize
+        env:
+          PROJECT_ID_INPUT: ${{ env.PROJECT_ID_INPUT }}
+          RAW_PROJECT_ID: ${{ inputs.project_id }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+          RUN_MODE: ${{ env.RUN_MODE }}
+          JOB_STATUS: ${{ job.status }}
+          RESULT_ARTIFACT_NAME: ${{ env.RESULT_ARTIFACT_NAME }}
+          RUN_ID: ${{ env.RUN_ID }}
+          RUN_ATTEMPT: ${{ env.RUN_ATTEMPT }}
+          WORKFLOW_URL: ${{ env.WORKFLOW_URL }}
+          TIMESTAMP_UTC: ${{ env.TIMESTAMP_UTC }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESULT_DIR:-}" ]; then
+            RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-results-fallback-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
+            mkdir -p "$RESULT_DIR"
+          fi
+          echo "RESULT_DIR=$RESULT_DIR" >> "$GITHUB_ENV"
+
+          RESPONSE_FILE="$RESULT_DIR/factory-response.json"
+
+          # If the orchestrator did not write factory-response.json (tests_only
+          # or early failure), assemble a minimal response from available step files.
+          if [ ! -f "$RESPONSE_FILE" ]; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          project_id = os.environ.get("PROJECT_ID_INPUT") or os.environ.get("RAW_PROJECT_ID", "unknown")
+          run_mode = os.environ.get("RUN_MODE", "unknown")
+          result_dir = Path(os.environ["RESULT_DIR"])
+          result_dir.mkdir(parents=True, exist_ok=True)
+
+          step_files = [
+              ("normalize_inputs", result_dir / "normalize_inputs.json"),
+              ("automated_tests_only", result_dir / "automated_tests_only.json"),
+          ]
+
+          steps = []
+          overall_status = "failed" if os.environ.get("JOB_STATUS") == "failure" else "success"
+          errors = []
+
+          for step_name, step_path in step_files:
+              if step_path.exists():
+                  data = json.loads(step_path.read_text(encoding="utf-8"))
+              else:
+                  data = {"project_id": project_id, "step": step_name,
+                          "status": "skipped", "mode": run_mode}
+              steps.append(data)
+              if data.get("status") == "failed":
+                  overall_status = "failed"
+                  err = str(data.get("error", "")).strip()
+                  if err:
+                      errors.append(f"{step_name}: {err}")
+
+          try:
+              import sys as _sys
+              _sys.path.insert(0, "scripts")
+              from factory_run_contract import CONTRACT_VERSION as _cv
+              _contract_ver = str(_cv).strip() or "v1"
+          except Exception:
+              _contract_ver = "v1"
+
+          response = {
+              "contract_version": _contract_ver,
+              "project_id": project_id,
+              "run_id": os.environ.get("RUN_ID", ""),
+              "run_attempt": os.environ.get("RUN_ATTEMPT", ""),
+              "workflow_url": os.environ.get("WORKFLOW_URL", ""),
+              "timestamp_utc": os.environ.get("TIMESTAMP_UTC", ""),
+              "repo_url": "",
+              "deployment_url": "",
+              "status": overall_status,
+              "run_mode": run_mode,
+              "idempotency_key": "",
+              "steps": steps,
+              "deployment": {"status": "not_applicable", "url": ""},
+              "quality_result": {},
+              "error_summary": "; ".join(errors),
+              "failure_reason": "; ".join(errors) if errors else "",
+              "kill_candidate": False,
+              "optimize_candidate": False,
+              "scale_candidate": False,
+              "result_artifact": {
+                  "name": os.environ.get("RESULT_ARTIFACT_NAME", ""),
+                  "path": "factory-response.json",
+              },
+          }
+          response_path = result_dir / "factory-response.json"
+          response_path.write_text(
+              json.dumps(response, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(response, ensure_ascii=True))
+          PY
+          fi
+
+          echo "factory_response<<EOF" >> "$GITHUB_OUTPUT"
+          cat "$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          response_file = Path(os.environ["RESULT_DIR"]) / "factory-response.json"
+          response = json.loads(response_file.read_text(encoding="utf-8"))
+          lines = [
+              f"RUN MODE: {str(response.get('run_mode', 'unknown')).upper()}",
+              f"RUN STATUS: {str(response.get('status', 'failed')).upper()}",
+              f"PROJECT ID: {response.get('project_id', 'unknown')}",
+              f"RUN ID: {response.get('run_id', '')}",
+              f"RUN ATTEMPT: {response.get('run_attempt', '')}",
+              f"WORKFLOW URL: {response.get('workflow_url', '')}",
+              f"REPO: {response.get('repo_url', 'not-created')}",
+              f"DEPLOYMENT: {response.get('deployment_url', 'not-available')}",
+              f"IDEMPOTENCY KEY: {response.get('idempotency_key', 'not-available')}",
+              f"CONTRACT VERSION: {response.get('contract_version', 'v1')}",
+              f"ERROR SUMMARY: {response.get('error_summary', 'none') or 'none'}",
+              f"FAILURE REASON: {response.get('failure_reason', 'none') or 'none'}",
+              f"KILL CANDIDATE: {response.get('kill_candidate', False)}",
+              f"OPTIMIZE CANDIDATE: {response.get('optimize_candidate', False)}",
+              f"SCALE CANDIDATE: {response.get('scale_candidate', False)}",
+          ]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("## Factory Execution Summary\n\n")
+              for line in lines:
+                  handle.write(f"- {line}\n")
+          print("\n".join(lines))
+          PY
+
+      - name: 20) Emit alert payload on failure
         if: failure()
         env:
           FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
         run: |
           set -euo pipefail
           python scripts/emit_alert.py \
-            --project-id "${{ inputs.project_id }}" \
+            --project-id "${PROJECT_ID_INPUT:-${{ inputs.project_id }}}" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT" \
             --workflow-url "$WORKFLOW_URL" \
@@ -155,7 +492,7 @@ jobs:
             --error-summary "Check factory-response.json and step logs for details" \
             --result-file "$RESULT_DIR/alert_payload.json"
 
-      - name: 6) Upload result artifacts
+      - name: 21) Upload result artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:

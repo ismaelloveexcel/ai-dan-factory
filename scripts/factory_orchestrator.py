@@ -1,8 +1,35 @@
 #!/usr/bin/env python3
 """
-Factory execution orchestrator.
+Factory Orchestrator — execution plane entry point for AI-DAN factory builds.
 
-Moves orchestration responsibility from GitHub YAML into deterministic Python stages.
+This repo is the *execution plane*.  It receives BuildBrief v1 payloads, runs
+deterministic pipeline stages, and returns FactoryRunResult v1 payloads.
+Business and project-level truth lives in the AI-DAN control plane (Repo 1).
+
+Three execution stages:
+  input_stage  → validate brief, run business/economics gates, repo discovery
+  build_stage  → create repo, inject brief, generate business output
+  deploy_stage → trigger deployment, health-check, quality gate, monitor, distribute
+
+Each stage calls leaf scripts as subprocesses so stage logic stays auditable
+in isolation and individual scripts remain independently testable.
+
+Contract definitions live in factory_run_contract.py.
+
+Usage (CLI):
+    python scripts/factory_orchestrator.py \\
+        --brief-file path/to/build_brief.json \\
+        --project-id my-project-001 \\
+        --state-db data/lifecycle.sqlite \\
+        --result-dir /tmp/factory-run \\
+        [--dry-run] \\
+        [--run-id RUN_ID] \\
+        [--run-attempt RUN_ATTEMPT] \\
+        [--workflow-url URL] \\
+        [--traffic-signal LOW|MEDIUM|HIGH] \\
+        [--activation-metric LOW|MEDIUM|HIGH] \\
+        [--revenue-signal-status NONE|WEAK|STRONG] \\
+        [--result-file path/to/factory_result.json]
 """
 
 from __future__ import annotations
@@ -10,914 +37,921 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from factory_run_contract import (
-    CANONICAL_STEP_ORDER,
-    FACTORY_RUN_RESULT_VERSION,
-    empty_result,
-    normalize_step,
-    utc_now,
+    BUILD_BRIEF_V1_OPTIONAL_FIELDS,
+    BUILD_BRIEF_V1_REQUIRED_FIELDS,
+    CONTRACT_VERSION,
+    FACTORY_RUN_RESULT_V1_KEYS,
 )
+from factory_utils import log_event, maybe_write_result, redact_secrets
+
+# Re-export contract constants so existing importers of this module keep working
+__all__ = [
+    "BUILD_BRIEF_V1_OPTIONAL_FIELDS",
+    "BUILD_BRIEF_V1_REQUIRED_FIELDS",
+    "CONTRACT_VERSION",
+    "FACTORY_RUN_RESULT_V1_KEYS",
+    "OrchestratorError",
+    "input_stage",
+    "build_stage",
+    "deploy_stage",
+    "run_pipeline",
+]
+
+STEP_NAME = "factory_orchestrator"
 
 
-@dataclass
-class Context:
-    repo_root: Path
-    result_dir: Path
-    brief_file: Path
-    normalized_brief_file: Path
-    normalized_inputs_file: Path
-    tests_only_log_file: Path
-    state_db: Path
-    template_project_dir: Path
-    project_id_raw: str
-    build_brief_json: str
-    dry_run_raw: str
-    run_automated_tests_only_raw: str
-    test_mode_raw: str
-    run_id: str
-    run_attempt: str
-    workflow_url: str
-    timestamp_utc: str
-    result_artifact_name: str
-    traffic_signal: str
-    activation_metric: str
-    revenue_signal_status: str
-    github_repository_owner: str
-    github_repository_name: str
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _run_script(args: list[str], step: str) -> subprocess.CompletedProcess[str]:
+    """Run a leaf script, print redacted output, and return the completed process."""
+    result = subprocess.run(
+        args,
+        text=True,
+        capture_output=True,
+    )
+    if result.stdout:
+        print(redact_secrets(result.stdout.rstrip()), flush=True)
+    if result.stderr:
+        print(redact_secrets(result.stderr.rstrip()), file=sys.stderr, flush=True)
+    if result.returncode != 0:
+        raise OrchestratorError(
+            f"Stage step '{step}' failed with exit code {result.returncode}"
+        )
+    return result
+
+
+def _read_json_safe(path: Path) -> dict[str, Any]:
+    if path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
 
 
 class OrchestratorError(Exception):
-    pass
+    """Raised when a pipeline stage fails unrecoverably."""
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
+# ---------------------------------------------------------------------------
+# Stage definitions
+# ---------------------------------------------------------------------------
+
+
+def input_stage(
+    *,
+    brief_file: Path,
+    project_id: str,
+    state_db: str,
+    run_id: str,
+    run_attempt: str,
+    workflow_url: str,
+    timestamp_utc: str,
+    result_dir: Path,
+    dry_run: bool,
+    mode: str,
+) -> dict[str, Any]:
+    """
+    input_stage — validate brief, run lifecycle init, business gate, and gates.
+
+    Returns a dict with:
+      normalized_brief_file  (Path) : path to the normalised brief JSON
+      idempotency_key        (str)  : stable key from the brief
+      business_decision      (str)  : APPROVE | HOLD | REJECT
+      business_score         (float): numeric gate score
+      stage_results          (dict) : per-step result payloads
+    """
+    stage_results: dict[str, Any] = {}
+    dry_flag = ["--dry-run"] if dry_run else []
+    py = sys.executable
+
+    # 1) Validate brief
+    normalized_brief = result_dir / "normalized_brief.json"
+    validate_result = result_dir / "validate_brief.json"
+    _run_script(
+        [
+            py, "scripts/validate_brief.py",
+            "--brief-file", str(brief_file),
+            "--expected-project-id", project_id,
+            "--normalized-output", str(normalized_brief),
+            "--result-file", str(validate_result),
+        ] + dry_flag,
+        step="validate_brief",
+    )
+    stage_results["validate_brief"] = _read_json_safe(validate_result)
+    idempotency_key = str(stage_results["validate_brief"].get("idempotency_key", ""))
+
+    # 2) Initialize lifecycle state
+    lifecycle_proc = _run_script(
+        [
+            py, "scripts/lifecycle_orchestrator.py",
+            "--state-db", state_db,
+            "--project-id", project_id,
+            "--run-id", run_id,
+            "--run-attempt", run_attempt,
+            "--to-state", "idea",
+            "--reason", "Initialized lifecycle state via orchestrator",
+            "--workflow-url", workflow_url,
+            "--timestamp-utc", timestamp_utc,
+            "--metadata-json", json.dumps({"workflow_url": workflow_url}),
+        ],
+        step="lifecycle_idea",
+    )
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        stage_results["lifecycle_idea"] = json.loads(lifecycle_proc.stdout) if lifecycle_proc.stdout.strip() else {}
     except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+        stage_results["lifecycle_idea"] = {}
 
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-
-
-def _run_python(ctx: Context, args: list[str]) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(
-        [sys.executable, *args],
-        cwd=ctx.repo_root,
-        capture_output=True,
-        text=True,
-    )
-    if proc.stdout:
-        print(proc.stdout.rstrip())
-    if proc.stderr:
-        print(proc.stderr.rstrip(), file=sys.stderr)
-    return proc
-
-
-def _result_path(ctx: Context, name: str) -> Path:
-    return ctx.result_dir / f"{name}.json"
-
-
-def input_stage(ctx: Context) -> dict[str, Any]:
-    ctx.brief_file.write_text(ctx.build_brief_json or "", encoding="utf-8")
-    out = _result_path(ctx, "normalize_inputs")
-    proc = _run_python(
-        ctx,
+    # 3) Unified business gate
+    brief_source = normalized_brief if normalized_brief.is_file() and normalized_brief.stat().st_size > 0 else brief_file
+    gate_result = result_dir / "business_gate.json"
+    _run_script(
         [
-            "scripts/normalize_workflow_inputs.py",
-            "--project-id",
-            ctx.project_id_raw,
-            "--build-brief-json",
-            ctx.build_brief_json,
-            "--dry-run",
-            ctx.dry_run_raw,
-            "--run-automated-tests-only",
-            ctx.run_automated_tests_only_raw,
-            "--test-mode",
-            ctx.test_mode_raw,
-            "--normalized-output",
-            str(ctx.normalized_inputs_file),
-            "--result-file",
-            str(out),
+            py, "scripts/validate_business_gate.py",
+            "--brief-file", str(brief_source),
+            "--result-file", str(gate_result),
+            "--state-db", state_db,
+            "--workflow-run-id", run_id,
+            "--workflow-run-attempt", run_attempt,
+            "--workflow-url", workflow_url,
+            "--timestamp-utc", timestamp_utc,
+            "--run-mode", mode,
         ],
+        step="business_gate",
     )
-    if proc.returncode != 0:
-        raise OrchestratorError("Input contract normalization failed.")
+    gate_data = _read_json_safe(gate_result)
+    stage_results["business_gate"] = gate_data
+    business_decision = str(gate_data.get("decision", ""))
+    business_score = float(gate_data.get("score", 0))
 
-    normalized = _read_json(ctx.normalized_inputs_file)
-    if not normalized:
-        raise OrchestratorError("Normalized input contract missing.")
-
-    if str(normalized.get("run_mode", "")) == "tests_only":
-        test_proc = _run_python(ctx, ["scripts/run_factory_tests.py"])
-        ctx.tests_only_log_file.write_text(
-            (test_proc.stdout or "") + ("\n" + test_proc.stderr if test_proc.stderr else ""),
-            encoding="utf-8",
-        )
-        status = "success" if test_proc.returncode == 0 else "failed"
-        payload = {
-            "project_id": str(normalized.get("project_id", "unknown")),
-            "step": "automated_tests_only",
-            "status": status,
-            "mode": "tests_only",
-        }
-        if status == "failed":
-            payload["error"] = "Automated test suite failed. See tests_only.log."
-        _write_json(_result_path(ctx, "automated_tests_only"), payload)
-        if test_proc.returncode != 0:
-            raise OrchestratorError(payload.get("error", "Automated tests failed."))
-    return normalized
-
-
-def gate_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    project_id = str(normalized_inputs["project_id"])
-    run_mode = str(normalized_inputs["run_mode"])
-    dry_run_effective = bool(normalized_inputs.get("dry_run_effective"))
-
-    proc = _run_python(
-        ctx,
-        [
-            "scripts/lifecycle_orchestrator.py",
-            "--state-db",
-            str(ctx.state_db),
-            "--project-id",
-            project_id,
-            "--run-id",
-            ctx.run_id,
-            "--run-attempt",
-            ctx.run_attempt,
-            "--to-state",
-            "idea",
-            "--reason",
-            "Initialized execution lifecycle state",
-            "--workflow-url",
-            ctx.workflow_url,
-            "--timestamp-utc",
-            ctx.timestamp_utc,
-            "--metadata-json",
-            json.dumps({"workflow_url": ctx.workflow_url}),
-        ],
-    )
-    if proc.returncode == 0:
-        _write_json(
-            _result_path(ctx, "lifecycle_idea"),
-            {
-                "project_id": project_id,
-                "step": "lifecycle_idea",
-                "status": "success",
-                "mode": run_mode,
-            },
-        )
-    else:
-        _write_json(
-            _result_path(ctx, "lifecycle_idea"),
-            {
-                "project_id": project_id,
-                "step": "lifecycle_idea",
-                "status": "failed",
-                "mode": run_mode,
-                "error": {"code": "LC_INIT_FAILED", "message": (proc.stderr or proc.stdout or "").strip() or "Lifecycle initialization failed."},
-            },
-        )
+    if business_decision != "APPROVE":
         raise OrchestratorError(
-            f"Lifecycle initialization failed with exit code {proc.returncode}."
+            f"Business gate decision={business_decision}, score={business_score}. "
+            "Build/deploy blocked."
         )
 
-    validate_args = [
-        "scripts/validate_brief.py",
-        "--brief-file",
-        str(ctx.brief_file),
-        "--expected-project-id",
-        project_id,
-        "--normalized-output",
-        str(ctx.normalized_brief_file),
-        "--result-file",
-        str(_result_path(ctx, "validate_brief")),
-    ]
-    if dry_run_effective:
-        validate_args.append("--dry-run")
-    if _run_python(ctx, validate_args).returncode != 0:
-        raise OrchestratorError("BuildBrief validation failed.")
-
-    gate_result_path = _result_path(ctx, "validate_business_gate")
-    if _run_python(
-        ctx,
+    # 4) Build economics
+    economics_result = result_dir / "build_economics.json"
+    _run_script(
         [
-            "scripts/validate_business_gate.py",
-            "--brief-file",
-            str(ctx.normalized_brief_file),
-            "--result-file",
-            str(gate_result_path),
-            "--state-db",
-            str(ctx.state_db),
-            "--workflow-run-id",
-            ctx.run_id,
-            "--workflow-run-attempt",
-            ctx.run_attempt,
-            "--workflow-url",
-            ctx.workflow_url,
-            "--timestamp-utc",
-            ctx.timestamp_utc,
-            "--run-mode",
-            run_mode,
-        ],
-    ).returncode != 0:
-        raise OrchestratorError("Business gate validation failed.")
-
-    gate_data = _read_json(gate_result_path)
-    score = str(gate_data.get("score", "0"))
-    decision = str(gate_data.get("decision", ""))
-    if decision != "APPROVE":
-        reason = str(gate_data.get("reason", "Business gate decision was not APPROVE."))
-        raise OrchestratorError(reason)
-
-    econ_args = [
-        "scripts/build_economics.py",
-        "--brief-file",
-        str(ctx.normalized_brief_file),
-        "--result-file",
-        str(_result_path(ctx, "build_economics")),
-        "--project-id",
-        project_id,
-    ]
-    if dry_run_effective:
-        econ_args.append("--dry-run")
-    if _run_python(ctx, econ_args).returncode != 0:
-        raise OrchestratorError("Build economics stage failed.")
-
-    if not dry_run_effective:
-        econ_data = _read_json(_result_path(ctx, "build_economics"))
-        if str(econ_data.get("economics_decision", "")).upper() == "HOLD":
-            raise OrchestratorError("Build economics decision is HOLD; execution paused.")
-
-    control_args = [
-        "scripts/build_control.py",
-        "--brief-file",
-        str(ctx.normalized_brief_file),
-        "--state-db",
-        str(ctx.state_db),
-        "--business-score",
-        score,
-        "--result-file",
-        str(_result_path(ctx, "build_control")),
-        "--project-id",
-        project_id,
-    ]
-    if dry_run_effective:
-        control_args.append("--dry-run")
-    if _run_python(ctx, control_args).returncode != 0:
-        raise OrchestratorError("Build control stage failed.")
-
-    return gate_data, run_mode
-
-
-def discovery_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> dict[str, Any]:
-    project_id = str(normalized_inputs["project_id"])
-    dry_run_effective = bool(normalized_inputs.get("dry_run_effective"))
-
-    args = [
-        "scripts/repo_discovery_engine.py",
-        "--brief-file",
-        str(ctx.normalized_brief_file),
-        "--project-id",
-        project_id,
-        "--result-file",
-        str(_result_path(ctx, "repo_discovery")),
-    ]
-    if dry_run_effective:
-        args.append("--dry-run")
-    if _run_python(ctx, args).returncode != 0:
-        raise OrchestratorError("Repo discovery stage failed.")
-    return _read_json(_result_path(ctx, "repo_discovery"))
-
-
-def repo_stage(ctx: Context, normalized_inputs: dict[str, Any], gate_data: dict[str, Any], discovery: dict[str, Any]) -> str:
-    project_id = str(normalized_inputs["project_id"])
-    run_mode = str(normalized_inputs["run_mode"])
-    dry_run_effective = bool(normalized_inputs.get("dry_run_effective"))
-
-    proc = _run_python(
-        ctx,
-        [
-            "scripts/lifecycle_orchestrator.py",
-            "--state-db",
-            str(ctx.state_db),
-            "--project-id",
-            project_id,
-            "--run-id",
-            ctx.run_id,
-            "--run-attempt",
-            ctx.run_attempt,
-            "--to-state",
-            "building",
-            "--reason",
-            "Approved execution entered build stage",
-            "--workflow-url",
-            ctx.workflow_url,
-            "--timestamp-utc",
-            ctx.timestamp_utc,
-            "--metadata-json",
-            json.dumps({"score": gate_data.get("score", 0)}),
-        ],
+            py, "scripts/build_economics.py",
+            "--brief-file", str(brief_source),
+            "--result-file", str(economics_result),
+            "--project-id", project_id,
+        ] + dry_flag,
+        step="build_economics",
     )
-    if proc.returncode == 0:
-        _write_json(
-            _result_path(ctx, "lifecycle_building"),
-            {"project_id": project_id, "step": "lifecycle_building", "status": "success", "mode": run_mode},
-        )
-    else:
-        _write_json(
-            _result_path(ctx, "lifecycle_building"),
-            {
-                "project_id": project_id,
-                "step": "lifecycle_building",
-                "status": "failed",
-                "mode": run_mode,
-                "error": {"code": "LC_BUILDING_FAILED", "message": (proc.stderr or proc.stdout or "").strip() or "Lifecycle transition to building failed."},
-            },
-        )
-        raise OrchestratorError(
-            f"Failed to transition project {project_id} to building state (exit code {proc.returncode})."
-        )
+    economics_data = _read_json_safe(economics_result)
+    stage_results["build_economics"] = economics_data
+    if not dry_run and economics_data.get("economics_decision") == "HOLD":
+        raise OrchestratorError("Build economics decision is HOLD; pausing pipeline.")
 
-    normalized_brief = _read_json(ctx.normalized_brief_file)
-    idempotency_key = str(normalized_brief.get("idempotency_key", ""))
+    # 5) Build control and rate limiting
+    control_result = result_dir / "build_control.json"
+    _run_script(
+        [
+            py, "scripts/build_control.py",
+            "--brief-file", str(brief_source),
+            "--state-db", state_db,
+            "--business-score", str(business_score),
+            "--result-file", str(control_result),
+            "--project-id", project_id,
+        ] + dry_flag,
+        step="build_control",
+    )
+    stage_results["build_control"] = _read_json_safe(control_result)
 
-    tmpl_owner = ctx.github_repository_owner
-    tmpl_repo = ctx.github_repository_name
-    selected_repo = str(discovery.get("selected_repo", ""))
-    if str(discovery.get("selection_mode", "")) == "REUSE_EXTERNAL_TEMPLATE" and "/" in selected_repo:
-        parts = selected_repo.split("/", 1)
-        tmpl_owner, tmpl_repo = parts[0], parts[1]
+    # 6) Repo discovery and template selection
+    discovery_result = result_dir / "repo_discovery.json"
+    _run_script(
+        [
+            py, "scripts/repo_discovery_engine.py",
+            "--brief-file", str(brief_source),
+            "--project-id", project_id,
+            "--result-file", str(discovery_result),
+        ] + dry_flag,
+        step="repo_discovery",
+    )
+    stage_results["repo_discovery"] = _read_json_safe(discovery_result)
 
-    env = os.environ.copy()
-    env["TEMPLATE_OWNER"] = tmpl_owner
-    env["TEMPLATE_REPO"] = tmpl_repo
+    return {
+        "normalized_brief_file": normalized_brief,
+        "idempotency_key": idempotency_key,
+        "business_decision": business_decision,
+        "business_score": business_score,
+        "stage_results": stage_results,
+    }
 
-    args = [
-        sys.executable,
-        "scripts/create_project.py",
-        "--project-id",
-        project_id,
-        "--org",
-        ctx.github_repository_owner,
-        "--template-owner",
-        tmpl_owner,
-        "--template-repo",
-        tmpl_repo,
-        "--idempotency-key",
-        idempotency_key,
-        "--result-file",
-        str(_result_path(ctx, "create_repo")),
-    ]
-    if dry_run_effective:
-        args.append("--dry-run")
-    proc = subprocess.run(args, cwd=ctx.repo_root, env=env, capture_output=True, text=True)
-    if proc.stdout:
-        print(proc.stdout.rstrip())
-    if proc.stderr:
-        print(proc.stderr.rstrip(), file=sys.stderr)
-    if proc.returncode != 0:
-        raise OrchestratorError("Repository creation stage failed.")
 
-    if dry_run_effective:
-        inject_args = [
-            "scripts/inject_brief.py",
-            "--project-id",
-            project_id,
-            "--project-dir",
-            str(ctx.template_project_dir),
-            "--brief-file",
-            str(ctx.normalized_brief_file),
-            "--idempotency-key",
-            idempotency_key,
-            "--result-file",
-            str(_result_path(ctx, "inject_brief")),
-            "--dry-run",
-        ]
-        if _run_python(ctx, inject_args).returncode != 0:
-            raise OrchestratorError("Brief injection stage failed in dry-run mode.")
-        return idempotency_key
+def build_stage(
+    *,
+    project_id: str,
+    normalized_brief_file: Path,
+    idempotency_key: str,
+    state_db: str,
+    run_id: str,
+    run_attempt: str,
+    workflow_url: str,
+    timestamp_utc: str,
+    result_dir: Path,
+    dry_run: bool,
+    discovery_result: dict[str, Any],
+    template_owner: str,
+    template_repo: str,
+    repo_org: str,
+) -> dict[str, Any]:
+    """
+    build_stage — create project repo, inject brief, and generate business output.
 
-    create_repo = _read_json(_result_path(ctx, "create_repo"))
-    repo_url = str(create_repo.get("repo_url", "")).strip()
-    if not repo_url:
-        inject_args = [
-            "scripts/inject_brief.py",
-            "--project-id",
-            project_id,
-            "--project-dir",
-            str(ctx.template_project_dir),
-            "--brief-file",
-            str(ctx.normalized_brief_file),
-            "--idempotency-key",
-            idempotency_key,
-            "--result-file",
-            str(_result_path(ctx, "inject_brief")),
-        ]
-        if _run_python(ctx, inject_args).returncode != 0:
-            raise OrchestratorError("Brief injection fallback stage failed.")
-        return idempotency_key
+    Returns a dict with:
+      repo_url       (str) : URL of the created/found project repository
+      stage_results  (dict): per-step result payloads
+    """
+    stage_results: dict[str, Any] = {}
+    dry_flag = ["--dry-run"] if dry_run else []
+    py = sys.executable
 
-    workdir = Path(tempfile.mkdtemp(prefix=f"generated-repo-{ctx.run_id}-"))
+    # Determine effective template source from discovery result
+    tmpl_owner = template_owner
+    tmpl_repo = template_repo
+    selection_mode = str(discovery_result.get("selection_mode", ""))
+    if selection_mode == "REUSE_EXTERNAL_TEMPLATE":
+        selected = str(discovery_result.get("selected_repo", ""))
+        if selected and "/" in selected:
+            tmpl_owner, tmpl_repo = selected.split("/", 1)
+
+    # 1) Advance lifecycle to building
+    lifecycle_building_proc = _run_script(
+        [
+            py, "scripts/lifecycle_orchestrator.py",
+            "--state-db", state_db,
+            "--project-id", project_id,
+            "--run-id", run_id,
+            "--run-attempt", run_attempt,
+            "--to-state", "building",
+            "--reason", "Approved idea entered build stage",
+            "--workflow-url", workflow_url,
+            "--timestamp-utc", timestamp_utc,
+            "--metadata-json", "{}",
+        ],
+        step="lifecycle_building",
+    )
     try:
-        token = os.environ.get("FACTORY_GITHUB_TOKEN", "")
-        clone_url = repo_url.replace("https://", f"https://x-access-token:{token}@") if token else repo_url
-        clone_proc = subprocess.run(
-            ["git", "clone", "--depth=1", clone_url, str(workdir)],
-            cwd=ctx.repo_root,
-            capture_output=True,
-            text=True,
-        )
-        if clone_proc.returncode != 0:
-            raise OrchestratorError("Failed to clone generated repository for injection.")
+        stage_results["lifecycle_building"] = json.loads(lifecycle_building_proc.stdout) if lifecycle_building_proc.stdout.strip() else {}
+    except json.JSONDecodeError:
+        stage_results["lifecycle_building"] = {}
 
-        inject_args = [
-            "scripts/inject_brief.py",
-            "--project-id",
-            project_id,
-            "--project-dir",
-            str(workdir),
-            "--brief-file",
-            str(ctx.normalized_brief_file),
-            "--idempotency-key",
-            idempotency_key,
-            "--result-file",
-            str(_result_path(ctx, "inject_brief")),
-        ]
-        if _run_python(ctx, inject_args).returncode != 0:
-            raise OrchestratorError("Brief injection stage failed.")
-
-        subprocess.run(["git", "-C", str(workdir), "config", "user.email", "factory-bot@users.noreply.github.com"], check=False)
-        subprocess.run(["git", "-C", str(workdir), "config", "user.name", "Factory Bot"], check=False)
-        subprocess.run(["git", "-C", str(workdir), "add", "PRODUCT_BRIEF.md", "product.config.json"], check=False)
-        diff_proc = subprocess.run(["git", "-C", str(workdir), "diff", "--cached", "--quiet"], check=False)
-        if diff_proc.returncode != 0:
-            subprocess.run(
-                ["git", "-C", str(workdir), "commit", "-m", f"chore: inject product brief for {project_id}"],
-                check=True,
-            )
-            subprocess.run(["git", "-C", str(workdir), "push"], check=True)
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
-
-    return idempotency_key
-
-
-def build_stage(ctx: Context) -> None:
-    if _run_python(
-        ctx,
+    # 2) Create project repository
+    create_result = result_dir / "create_repo.json"
+    _run_script(
         [
-            "scripts/business_output_engine.py",
-            "--brief-file",
-            str(ctx.normalized_brief_file),
-            "--output-file",
-            str(_result_path(ctx, "business_output")),
-            "--result-file",
-            str(_result_path(ctx, "business_output_result")),
-        ],
-    ).returncode != 0:
-        raise OrchestratorError("Business output stage failed.")
+            py, "scripts/create_project.py",
+            "--project-id", project_id,
+            "--org", repo_org,
+            "--template-owner", tmpl_owner,
+            "--template-repo", tmpl_repo,
+            "--idempotency-key", idempotency_key,
+            "--result-file", str(create_result),
+        ] + dry_flag,
+        step="create_repo",
+    )
+    create_data = _read_json_safe(create_result)
+    stage_results["create_repo"] = create_data
+    repo_url = str(create_data.get("repo_url", ""))
 
-
-def deploy_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
-    project_id = str(normalized_inputs["project_id"])
-    run_mode = str(normalized_inputs["run_mode"])
-    dry_run_effective = bool(normalized_inputs.get("dry_run_effective"))
-
-    normalized_brief = _read_json(ctx.normalized_brief_file)
-    idempotency_key = str(normalized_brief.get("idempotency_key", ""))
-
-    deploy_args = [
-        "scripts/deploy.py",
-        "--project-id",
-        project_id,
-        "--idempotency-key",
-        idempotency_key,
-        "--result-file",
-        str(_result_path(ctx, "deploy")),
-    ]
-    if dry_run_effective:
-        deploy_args.append("--dry-run")
-    if _run_python(ctx, deploy_args).returncode != 0:
-        raise OrchestratorError("Deploy trigger stage failed.")
-
-    deployment_url = str(_read_json(_result_path(ctx, "deploy")).get("deployment_url", ""))
-    health_args = [
-        "scripts/deploy_health_check.py",
-        "--project-id",
-        project_id,
-        "--deployment-url",
-        deployment_url,
-        "--result-file",
-        str(_result_path(ctx, "deploy_health")),
-    ]
-    if dry_run_effective:
-        health_args.append("--dry-run")
-    if _run_python(ctx, health_args).returncode != 0:
-        raise OrchestratorError("Deployment health check failed.")
-
-    for to_state, step in (("deployed", "lifecycle_deployed"), ("monitored", "lifecycle_monitored")):
-        proc = _run_python(
-            ctx,
+    # 3) Inject BuildBrief into generated repository
+    inject_result = result_dir / "inject_brief.json"
+    template_project_dir = str(Path("templates") / "saas-template")
+    if dry_run:
+        # dry-run: inject into local template dir to simulate the operation
+        _run_script(
             [
-                "scripts/lifecycle_orchestrator.py",
-                "--state-db",
-                str(ctx.state_db),
-                "--project-id",
-                project_id,
-                "--run-id",
-                ctx.run_id,
-                "--run-attempt",
-                ctx.run_attempt,
-                "--to-state",
-                to_state,
-                "--reason",
-                f"Execution run entered {to_state} stage",
-                "--workflow-url",
-                ctx.workflow_url,
-                "--timestamp-utc",
-                ctx.timestamp_utc,
-                "--metadata-json",
-                json.dumps({"workflow_url": ctx.workflow_url}),
+                py, "scripts/inject_brief.py",
+                "--project-id", project_id,
+                "--project-dir", template_project_dir,
+                "--brief-file", str(normalized_brief_file),
+                "--idempotency-key", idempotency_key,
+                "--result-file", str(inject_result),
+                "--dry-run",
             ],
+            step="inject_brief",
         )
-        if proc.returncode == 0:
-            _write_json(
-                _result_path(ctx, step),
-                {"project_id": project_id, "step": step, "status": "success", "mode": run_mode},
-            )
+    else:
+        # production: clone generated repo, inject brief, commit and push
+        github_token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("FACTORY_GITHUB_TOKEN", "")).strip()
+        if repo_url and github_token:
+            with tempfile.TemporaryDirectory(prefix=f"factory-inject-{project_id}-") as _inject_tmp:
+                generated_repo_dir = Path(_inject_tmp)
+                clone_url = repo_url.replace("https://", f"https://x-access-token:{github_token}@")
+                _run_script(
+                    ["git", "clone", "--depth=1", clone_url, str(generated_repo_dir)],
+                    step="git_clone",
+                )
+                _run_script(
+                    [
+                        py, "scripts/inject_brief.py",
+                        "--project-id", project_id,
+                        "--project-dir", str(generated_repo_dir),
+                        "--brief-file", str(normalized_brief_file),
+                        "--idempotency-key", idempotency_key,
+                        "--result-file", str(inject_result),
+                    ],
+                    step="inject_brief",
+                )
+                _run_script(
+                    ["git", "-C", str(generated_repo_dir), "config",
+                     "user.email", "factory-bot@users.noreply.github.com"],
+                    step="git_config_email",
+                )
+                _run_script(
+                    ["git", "-C", str(generated_repo_dir), "config", "user.name", "Factory Bot"],
+                    step="git_config_name",
+                )
+                _run_script(
+                    ["git", "-C", str(generated_repo_dir), "add",
+                     "PRODUCT_BRIEF.md", "product.config.json"],
+                    step="git_add",
+                )
+                # only commit and push if there are staged changes
+                diff_check = subprocess.run(
+                    ["git", "-C", str(generated_repo_dir), "diff", "--cached", "--quiet"],
+                    capture_output=True,
+                )
+                if diff_check.returncode != 0:
+                    _run_script(
+                        ["git", "-C", str(generated_repo_dir), "commit",
+                         "-m", f"chore: inject product brief for {project_id}"],
+                        step="git_commit",
+                    )
+                    _run_script(
+                        ["git", "-C", str(generated_repo_dir), "push"],
+                        step="git_push",
+                    )
         else:
-            error_output = (proc.stderr or proc.stdout or "").strip() or f"Lifecycle transition to {to_state} failed."
-            _write_json(
-                _result_path(ctx, step),
-                {
-                    "project_id": project_id,
-                    "step": step,
-                    "status": "failed",
-                    "mode": run_mode,
-                    "error": {"code": "LC_TRANSITION_FAILED", "message": error_output},
-                },
+            # fallback: no repo_url or no token — inject into template dir
+            print(
+                f"::warning::No repo_url or GITHUB_TOKEN for inject; "
+                "falling back to template dir.",
+                file=sys.stderr,
+                flush=True,
             )
-            raise OrchestratorError(f"Lifecycle transition to {to_state} failed.")
+            _run_script(
+                [
+                    py, "scripts/inject_brief.py",
+                    "--project-id", project_id,
+                    "--project-dir", template_project_dir,
+                    "--brief-file", str(normalized_brief_file),
+                    "--idempotency-key", idempotency_key,
+                    "--result-file", str(inject_result),
+                ],
+                step="inject_brief",
+            )
+    stage_results["inject_brief"] = _read_json_safe(inject_result)
 
-    if _run_python(
-        ctx,
+    # 4) Generate business output
+    business_output_file = result_dir / "business_output.json"
+    business_output_result = result_dir / "business_output_result.json"
+    _run_script(
         [
-            "scripts/monitor_and_decide.py",
-            "--state-db",
-            str(ctx.state_db),
-            "--run-id",
-            ctx.run_id,
-            "--run-attempt",
-            ctx.run_attempt,
-            "--project-id",
-            project_id,
-            "--traffic-signal",
-            ctx.traffic_signal,
-            "--activation-metric",
-            ctx.activation_metric,
-            "--revenue-signal-status",
-            ctx.revenue_signal_status,
-            "--timestamp-utc",
-            ctx.timestamp_utc,
-            "--result-file",
-            str(_result_path(ctx, "monitoring_decision")),
+            py, "scripts/business_output_engine.py",
+            "--brief-file", str(normalized_brief_file),
+            "--output-file", str(business_output_file),
+            "--result-file", str(business_output_result),
         ],
-    ).returncode != 0:
-        raise OrchestratorError("Monitoring recommendation stage failed.")
+        step="business_output",
+    )
+    stage_results["business_output"] = _read_json_safe(business_output_result)
+
+    return {
+        "repo_url": repo_url,
+        "business_output_file": business_output_file,
+        "stage_results": stage_results,
+    }
 
 
-def quality_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
-    project_id = str(normalized_inputs["project_id"])
-    dry_run_effective = bool(normalized_inputs.get("dry_run_effective"))
+def deploy_stage(
+    *,
+    project_id: str,
+    normalized_brief_file: Path,
+    idempotency_key: str,
+    state_db: str,
+    run_id: str,
+    run_attempt: str,
+    workflow_url: str,
+    timestamp_utc: str,
+    result_dir: Path,
+    dry_run: bool,
+    business_output_file: Path,
+    traffic_signal: str,
+    activation_metric: str,
+    revenue_signal_status: str,
+) -> dict[str, Any]:
+    """
+    deploy_stage — deploy, health-check, quality gate, monitor, and distribute.
 
-    health_status = str(_read_json(_result_path(ctx, "deploy_health")).get("health_status", "unknown"))
-    args = [
-        "scripts/quality_gate.py",
-        "--brief-file",
-        str(ctx.normalized_brief_file),
-        "--business-output-file",
-        str(_result_path(ctx, "business_output")),
-        "--health-status",
-        health_status,
-        "--result-file",
-        str(_result_path(ctx, "quality_gate")),
-        "--project-id",
-        project_id,
-    ]
-    if dry_run_effective:
-        args.append("--dry-run")
-    if _run_python(ctx, args).returncode != 0:
-        raise OrchestratorError("Quality gate failed.")
+    Returns a dict with:
+      deployment_url    (str) : deployment URL
+      deployment_status (str) : triggered | skipped | failed
+      kill_candidate    (bool): monitoring kill flag
+      optimize_candidate(bool): monitoring optimize flag
+      scale_candidate   (bool): monitoring scale flag
+      stage_results     (dict): per-step result payloads
+    """
+    stage_results: dict[str, Any] = {}
+    dry_flag = ["--dry-run"] if dry_run else []
+    py = sys.executable
 
+    # 1) Trigger deployment
+    deploy_result = result_dir / "deploy.json"
+    _run_script(
+        [
+            py, "scripts/deploy.py",
+            "--project-id", project_id,
+            "--idempotency-key", idempotency_key,
+            "--result-file", str(deploy_result),
+        ] + dry_flag,
+        step="deploy",
+    )
+    deploy_data = _read_json_safe(deploy_result)
+    stage_results["deploy"] = deploy_data
+    deployment_url = str(deploy_data.get("deployment_url", ""))
+    deployment_status = str(deploy_data.get("deployment_status", deploy_data.get("status", "unknown")))
 
-def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
-    project_id = str(normalized_inputs["project_id"])
-    dry_run_effective = bool(normalized_inputs.get("dry_run_effective"))
+    # 2) Deployment health check
+    health_result = result_dir / "deploy_health.json"
+    _run_script(
+        [
+            py, "scripts/deploy_health_check.py",
+            "--project-id", project_id,
+            "--deployment-url", deployment_url,
+            "--result-file", str(health_result),
+        ] + dry_flag,
+        step="deploy_health",
+    )
+    health_data = _read_json_safe(health_result)
+    stage_results["deploy_health"] = health_data
+    health_status = str(health_data.get("health_status", "unknown"))
 
-    business_output_file = _result_path(ctx, "business_output")
-    distribution_args = [
-        "scripts/distribution_engine.py",
-        "--brief-file",
-        str(ctx.normalized_brief_file),
-        "--business-output-file",
-        str(business_output_file),
-        "--deployment-url",
-        str(_read_json(_result_path(ctx, "deploy")).get("deployment_url", "")),
-        "--result-file",
-        str(_result_path(ctx, "distribution")),
-        "--project-id",
-        project_id,
-    ]
-    if dry_run_effective:
-        distribution_args.append("--dry-run")
+    # 3) Product quality gate
+    quality_result = result_dir / "quality_gate.json"
+    bo_flag = ["--business-output-file", str(business_output_file)] if business_output_file.is_file() else []
+    _run_script(
+        [
+            py, "scripts/quality_gate.py",
+            "--brief-file", str(normalized_brief_file),
+        ] + bo_flag + [
+            "--health-status", health_status,
+            "--result-file", str(quality_result),
+            "--project-id", project_id,
+        ] + dry_flag,
+        step="quality_gate",
+    )
+    stage_results["quality_gate"] = _read_json_safe(quality_result)
 
+    # 4) Advance lifecycle to deployed
+    lifecycle_deployed_proc = _run_script(
+        [
+            py, "scripts/lifecycle_orchestrator.py",
+            "--state-db", state_db,
+            "--project-id", project_id,
+            "--run-id", run_id,
+            "--run-attempt", run_attempt,
+            "--to-state", "deployed",
+            "--reason", "Build completed and deployment triggered",
+            "--workflow-url", workflow_url,
+            "--timestamp-utc", timestamp_utc,
+            "--metadata-json", json.dumps({"workflow_url": workflow_url}),
+        ],
+        step="lifecycle_deployed",
+    )
+    try:
+        stage_results["lifecycle_deployed"] = json.loads(lifecycle_deployed_proc.stdout) if lifecycle_deployed_proc.stdout.strip() else {}
+    except json.JSONDecodeError:
+        stage_results["lifecycle_deployed"] = {}
+
+    # 5) Advance lifecycle to monitored
+    lifecycle_monitored_proc = _run_script(
+        [
+            py, "scripts/lifecycle_orchestrator.py",
+            "--state-db", state_db,
+            "--project-id", project_id,
+            "--run-id", run_id,
+            "--run-attempt", run_attempt,
+            "--to-state", "monitored",
+            "--reason", "Deployment entered monitoring stage",
+            "--workflow-url", workflow_url,
+            "--timestamp-utc", timestamp_utc,
+            "--metadata-json", json.dumps({"workflow_url": workflow_url}),
+        ],
+        step="lifecycle_monitored",
+    )
+    try:
+        stage_results["lifecycle_monitored"] = json.loads(lifecycle_monitored_proc.stdout) if lifecycle_monitored_proc.stdout.strip() else {}
+    except json.JSONDecodeError:
+        stage_results["lifecycle_monitored"] = {}
+
+    # 6) Monitor and decide
+    monitor_result = result_dir / "monitoring_decision.json"
+    _run_script(
+        [
+            py, "scripts/monitor_and_decide.py",
+            "--state-db", state_db,
+            "--run-id", run_id,
+            "--run-attempt", run_attempt,
+            "--project-id", project_id,
+            "--traffic-signal", traffic_signal,
+            "--activation-metric", activation_metric,
+            "--revenue-signal-status", revenue_signal_status,
+            "--timestamp-utc", timestamp_utc,
+            "--result-file", str(monitor_result),
+        ],
+        step="monitor_and_decide",
+    )
+    monitor_data = _read_json_safe(monitor_result)
+    stage_results["monitoring_decision"] = monitor_data
+    kill_candidate = bool(monitor_data.get("kill_candidate", False))
+    optimize_candidate = bool(monitor_data.get("optimize_candidate", False))
+    scale_candidate = bool(monitor_data.get("scale_candidate", False))
+
+    # 7) Distribution (optional — skip if no business output)
+    distribution_result = result_dir / "distribution.json"
     if business_output_file.is_file():
-        dist_proc = _run_python(ctx, distribution_args)
-        if dist_proc.returncode != 0:
-            _write_json(
-                _result_path(ctx, "distribution"),
-                {
-                    "project_id": project_id,
-                    "step": "distribution",
-                    "status": "failed",
-                    "mode": "dry_run" if dry_run_effective else "production",
-                    "error": {"code": "DISTRIBUTION_FAILED", "message": (dist_proc.stderr or dist_proc.stdout or "").strip() or "Distribution engine failed."},
-                },
-            )
-    else:
-        _write_json(
-            _result_path(ctx, "distribution"),
-            {
-                "project_id": project_id,
-                "step": "distribution",
-                "status": "skipped",
-                "mode": "dry_run" if dry_run_effective else "production",
-                "reason": "No business output file available.",
-            },
+        _run_script(
+            [
+                py, "scripts/distribution_engine.py",
+                "--brief-file", str(normalized_brief_file),
+                "--business-output-file", str(business_output_file),
+                "--deployment-url", deployment_url,
+                "--result-file", str(distribution_result),
+                "--project-id", project_id,
+            ] + dry_flag,
+            step="distribution",
         )
+        stage_results["distribution"] = _read_json_safe(distribution_result)
 
-    repo_url_val = str(_read_json(_result_path(ctx, "create_repo")).get("repo_url", ""))
-    deploy_health = _read_json(_result_path(ctx, "deploy_health"))
-    health_status = str(deploy_health.get("health_status", "unknown"))
-    build_status = "succeeded" if health_status in {"healthy", "simulated", "tests_only"} else "failed"
-
-    notify_args = [
-        "scripts/notify_director.py",
-        "--project-id",
-        project_id,
-        "--run-id",
-        ctx.run_id,
-        "--status",
-        build_status,
-        "--deploy-url",
-        str(_read_json(_result_path(ctx, "deploy")).get("deployment_url", "")),
-        "--repo-url",
-        repo_url_val,
-        "--result-file",
-        str(_result_path(ctx, "notify_director")),
-    ]
-    if build_status == "failed":
-        notify_args.extend(["--error", f"Build failed with health_status: {health_status}"])
-    if dry_run_effective:
-        notify_args.append("--dry-run")
-    notify_proc = _run_python(ctx, notify_args)
-    if notify_proc.returncode != 0:
-        _write_json(
-            _result_path(ctx, "notify_director"),
-            {
-                "project_id": project_id,
-                "step": "notify_director",
-                "status": "failed",
-                "mode": "dry_run" if dry_run_effective else "production",
-                "error": {"code": "NOTIFY_FAILED", "message": (notify_proc.stderr or notify_proc.stdout or "").strip() or "Notify director failed."},
-            },
-        )
-
-    portfolio_proc = _run_python(
-        ctx,
-        [
-            "scripts/portfolio_summary.py",
-            "--state-db",
-            str(ctx.state_db),
-            "--result-file",
-            str(_result_path(ctx, "portfolio_summary")),
-        ],
-    )
-    if portfolio_proc.returncode != 0:
-        _write_json(
-            _result_path(ctx, "portfolio_summary"),
-            {
-                "project_id": project_id,
-                "step": "portfolio_summary",
-                "status": "failed",
-                "mode": "dry_run" if dry_run_effective else "production",
-                "error": {"code": "PORTFOLIO_FAILED", "message": (portfolio_proc.stderr or portfolio_proc.stdout or "").strip() or "Portfolio summary failed."},
-            },
-        )
-
-
-def finalize_result(ctx: Context, run_mode: str, orchestrator_error: str = "") -> dict[str, Any]:
-    normalized_inputs = _read_json(ctx.normalized_inputs_file)
-    project_id = str(normalized_inputs.get("project_id", ctx.project_id_raw or "unknown"))
-
-    response = empty_result(
-        project_id=project_id,
-        run_id=ctx.run_id,
-        run_attempt=ctx.run_attempt,
-        workflow_url=ctx.workflow_url,
-        run_mode=run_mode,
-    )
-    response["timestamp_utc"] = ctx.timestamp_utc or utc_now()
-    response["result_artifact"]["name"] = ctx.result_artifact_name
-    response["contract_version"] = FACTORY_RUN_RESULT_VERSION
-
-    step_data: dict[str, dict[str, Any]] = {}
-
-    def _with_status(payload: dict[str, Any], step_name: str) -> dict[str, Any]:
-        if payload and "status" not in payload:
-            payload = dict(payload)
-            payload["status"] = "success"
-        if payload and "step" not in payload:
-            payload = dict(payload)
-            payload["step"] = step_name
-        if payload and "mode" not in payload:
-            payload = dict(payload)
-            payload["mode"] = run_mode
-        return payload
-    for step_name in CANONICAL_STEP_ORDER:
-        p = _result_path(ctx, step_name)
-        if p.is_file():
-            step_data[step_name] = _with_status(_read_json(p), step_name)
-        elif step_name == "validate_business_gate" and _result_path(ctx, "business_gate").is_file():
-            step_data[step_name] = _with_status(_read_json(_result_path(ctx, "business_gate")), step_name)
-        elif step_name == "business_output" and _result_path(ctx, "business_output_result").is_file():
-            step_data[step_name] = _with_status(_read_json(_result_path(ctx, "business_output_result")), step_name)
-        else:
-            step_data[step_name] = {"step": step_name, "status": "skipped", "mode": run_mode}
-
-    steps = [normalize_step(name, step_data[name], run_mode) for name in CANONICAL_STEP_ORDER]
-    response["steps"] = steps
-
-    create_repo = step_data.get("create_repo", {})
-    deploy = step_data.get("deploy", {})
-    quality_gate = step_data.get("quality_gate", {})
-    monitor = step_data.get("monitoring_decision", {})
-    validate = step_data.get("validate_brief", {})
-
-    response["repo_url"] = str(create_repo.get("repo_url", ""))
-    response["deployment_url"] = str(deploy.get("deployment_url", ""))
-    response["deployment"] = {
-        "status": str(deploy.get("deployment_status", deploy.get("status", "not_started"))),
-        "url": str(deploy.get("deployment_url", "")),
+    return {
+        "deployment_url": deployment_url,
+        "deployment_status": deployment_status,
+        "health_status": health_status,
+        "kill_candidate": kill_candidate,
+        "optimize_candidate": optimize_candidate,
+        "scale_candidate": scale_candidate,
+        "stage_results": stage_results,
     }
-    response["idempotency_key"] = str(validate.get("idempotency_key", ""))
-    response["quality"] = {
-        "status": str(quality_gate.get("status", "not_available")),
-        "score": quality_gate.get("quality_score"),
-        "decision": str(quality_gate.get("quality_decision", "not_available")),
-        "reason": str(quality_gate.get("quality_reason", "")),
-        "breakdown": quality_gate.get("quality_breakdown", {}),
-    }
-    response["execution_signals"] = {
-        "kill_candidate": bool(monitor.get("kill_candidate", False)),
-        "optimize_candidate": bool(monitor.get("optimize_candidate", False)),
-        "scale_candidate": bool(monitor.get("scale_candidate", False)),
-    }
-    response["kill_candidate"] = response["execution_signals"]["kill_candidate"]
-    response["optimize_candidate"] = response["execution_signals"]["optimize_candidate"]
-    response["scale_candidate"] = response["execution_signals"]["scale_candidate"]
-
-    errors: list[str] = []
-    for step in response["steps"]:
-        if step["status"] == "failed":
-            err = step.get("error", {})
-            msg = str(err.get("message", "")).strip()
-            if msg:
-                errors.append(f"{step['name']}: {msg}")
-
-    if orchestrator_error:
-        errors.insert(0, orchestrator_error)
-
-    response["error_summary"] = "; ".join(errors)
-    response["failure_reason"] = errors[0] if errors else ""
-
-    if errors:
-        response["status"] = "failed"
-        response["error"] = {"code": "EXECUTION_FAILED", "message": response["failure_reason"]}
-    else:
-        response["status"] = "success"
-        response["error"] = {"code": "", "message": ""}
-
-    _write_json(ctx.result_dir / "factory-response.json", response)
-    return response
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Execute the factory pipeline through Python orchestration stages")
-    parser.add_argument("--project-id", required=True)
-    parser.add_argument("--build-brief-json", default="")
-    parser.add_argument("--dry-run", required=True)
-    parser.add_argument("--run-automated-tests-only", default="false")
-    parser.add_argument("--test-mode", default="false")
-    parser.add_argument("--traffic-signal", default="LOW")
-    parser.add_argument("--activation-metric", default="LOW")
-    parser.add_argument("--revenue-signal-status", default="NONE")
-    parser.add_argument("--result-dir", required=True)
-    parser.add_argument("--state-db", required=True)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--run-attempt", required=True)
-    parser.add_argument("--workflow-url", required=True)
-    parser.add_argument("--timestamp-utc", default="")
-    parser.add_argument("--template-project-dir", default="templates/saas-template")
-    parser.add_argument("--github-repository-owner", required=True)
-    parser.add_argument("--github-repository-name", required=True)
-    parser.add_argument("--result-artifact-name", required=True)
-    return parser.parse_args()
+# ---------------------------------------------------------------------------
+# Top-level pipeline runner
+# ---------------------------------------------------------------------------
 
 
-def build_context(args: argparse.Namespace) -> Context:
-    repo_root = Path(__file__).resolve().parents[1]
-    result_dir = Path(args.result_dir).expanduser().resolve()
+def run_pipeline(
+    *,
+    brief_file: Path,
+    project_id: str,
+    state_db: str,
+    run_id: str,
+    run_attempt: str,
+    workflow_url: str,
+    result_dir: Path,
+    dry_run: bool,
+    traffic_signal: str = "LOW",
+    activation_metric: str = "LOW",
+    revenue_signal_status: str = "NONE",
+    template_owner: str = "",
+    template_repo: str = "",
+    repo_org: str = "",
+    result_file: str = "",
+) -> dict[str, Any]:
+    """
+    Orchestrate input_stage → build_stage → deploy_stage.
+
+    Returns a FactoryRunResult v1 dict for both successful and failed runs.
+    Writes it to *result_file* when provided and always writes
+    portfolio_summary.json. Callers, including the CLI wrapper, are
+    responsible for translating a failed result into a non-zero exit status.
+    """
     result_dir.mkdir(parents=True, exist_ok=True)
-    return Context(
-        repo_root=repo_root,
-        result_dir=result_dir,
-        brief_file=result_dir / "build-brief.json",
-        normalized_brief_file=result_dir / "normalized-brief.json",
-        normalized_inputs_file=result_dir / "normalized-inputs.json",
-        tests_only_log_file=result_dir / "tests_only.log",
-        state_db=Path(args.state_db).expanduser().resolve(),
-        template_project_dir=(repo_root / args.template_project_dir).resolve(),
-        project_id_raw=str(args.project_id),
-        build_brief_json=str(args.build_brief_json or ""),
-        dry_run_raw=str(args.dry_run),
-        run_automated_tests_only_raw=str(args.run_automated_tests_only),
-        test_mode_raw=str(args.test_mode),
-        run_id=str(args.run_id),
-        run_attempt=str(args.run_attempt),
-        workflow_url=str(args.workflow_url),
-        timestamp_utc=str(args.timestamp_utc or utc_now()),
-        result_artifact_name=str(args.result_artifact_name),
-        traffic_signal=str(args.traffic_signal),
-        activation_metric=str(args.activation_metric),
-        revenue_signal_status=str(args.revenue_signal_status),
-        github_repository_owner=str(args.github_repository_owner),
-        github_repository_name=str(args.github_repository_name),
+    timestamp_utc = _utc_now()
+    mode = "dry_run" if dry_run else "production"
+    py = sys.executable
+
+    log_event(
+        project_id=project_id,
+        step=STEP_NAME,
+        status="started",
+        mode=mode,
+        run_id=run_id,
+        run_attempt=run_attempt,
     )
+
+    all_steps: list[dict[str, Any]] = []
+    repo_url = ""
+    deployment_url = ""
+    deployment_status = "not_started"
+    idempotency_key = ""
+    kill_candidate = False
+    optimize_candidate = False
+    scale_candidate = False
+    errors: list[str] = []
+    failure_reason = ""
+    overall_status = "success"
+
+    try:
+        # -------- input_stage ------------------------------------------------
+        input_out = input_stage(
+            brief_file=brief_file,
+            project_id=project_id,
+            state_db=state_db,
+            run_id=run_id,
+            run_attempt=run_attempt,
+            workflow_url=workflow_url,
+            timestamp_utc=timestamp_utc,
+            result_dir=result_dir,
+            dry_run=dry_run,
+            mode=mode,
+        )
+        idempotency_key = input_out["idempotency_key"]
+        for step_name, step_data in input_out["stage_results"].items():
+            all_steps.append(step_data)
+            if isinstance(step_data, dict) and step_data.get("status") == "failed":
+                err = str(step_data.get("error", "")).strip()
+                if err:
+                    errors.append(f"{step_name}: {err}")
+
+        # -------- build_stage ------------------------------------------------
+        discovery_result = input_out["stage_results"].get("repo_discovery", {})
+        build_out = build_stage(
+            project_id=project_id,
+            normalized_brief_file=input_out["normalized_brief_file"],
+            idempotency_key=idempotency_key,
+            state_db=state_db,
+            run_id=run_id,
+            run_attempt=run_attempt,
+            workflow_url=workflow_url,
+            timestamp_utc=timestamp_utc,
+            result_dir=result_dir,
+            dry_run=dry_run,
+            discovery_result=discovery_result,
+            template_owner=template_owner,
+            template_repo=template_repo,
+            repo_org=repo_org,
+        )
+        repo_url = build_out["repo_url"]
+        for step_name, step_data in build_out["stage_results"].items():
+            all_steps.append(step_data)
+            if isinstance(step_data, dict) and step_data.get("status") == "failed":
+                err = str(step_data.get("error", "")).strip()
+                if err:
+                    errors.append(f"{step_name}: {err}")
+
+        # -------- deploy_stage -----------------------------------------------
+        deploy_out = deploy_stage(
+            project_id=project_id,
+            normalized_brief_file=input_out["normalized_brief_file"],
+            idempotency_key=idempotency_key,
+            state_db=state_db,
+            run_id=run_id,
+            run_attempt=run_attempt,
+            workflow_url=workflow_url,
+            timestamp_utc=timestamp_utc,
+            result_dir=result_dir,
+            dry_run=dry_run,
+            business_output_file=build_out["business_output_file"],
+            traffic_signal=traffic_signal,
+            activation_metric=activation_metric,
+            revenue_signal_status=revenue_signal_status,
+        )
+        deployment_url = deploy_out["deployment_url"]
+        deployment_status = deploy_out["deployment_status"]
+        kill_candidate = deploy_out["kill_candidate"]
+        optimize_candidate = deploy_out["optimize_candidate"]
+        scale_candidate = deploy_out["scale_candidate"]
+        for step_name, step_data in deploy_out["stage_results"].items():
+            all_steps.append(step_data)
+            if isinstance(step_data, dict) and step_data.get("status") == "failed":
+                err = str(step_data.get("error", "")).strip()
+                if err:
+                    errors.append(f"{step_name}: {err}")
+
+    except OrchestratorError as exc:
+        overall_status = "failed"
+        failure_reason = str(exc)
+        errors.append(failure_reason)
+        # Recover any step result files written to disk before the failure
+        # that are not already represented in all_steps.
+        _DISK_STEP_FILES = [
+            ("validate_brief", "validate_brief.json"),
+            ("business_gate", "business_gate.json"),
+            ("build_economics", "build_economics.json"),
+            ("build_control", "build_control.json"),
+            ("repo_discovery", "repo_discovery.json"),
+            ("create_repo", "create_repo.json"),
+            ("inject_brief", "inject_brief.json"),
+            ("business_output", "business_output_result.json"),
+            ("deploy", "deploy.json"),
+            ("deploy_health", "deploy_health.json"),
+            ("quality_gate", "quality_gate.json"),
+            ("monitoring_decision", "monitoring_decision.json"),
+            ("distribution", "distribution.json"),
+        ]
+        seen_step_names = {
+            s.get("step", "") for s in all_steps if isinstance(s, dict)
+        }
+        for step_name, fname in _DISK_STEP_FILES:
+            if step_name in seen_step_names:
+                continue
+            data = _read_json_safe(result_dir / fname)
+            if data:
+                all_steps.append(data)
+                seen_step_names.add(data.get("step", step_name))
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="failed",
+            mode=mode,
+            error=failure_reason,
+        )
+
+    # Portfolio summary — always run
+    try:
+        portfolio_result = result_dir / "portfolio_summary.json"
+        subprocess.run(
+            [py, "scripts/portfolio_summary.py",
+             "--state-db", state_db,
+             "--result-file", str(portfolio_result)],
+            text=True,
+            capture_output=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    error_summary = "; ".join(errors) if errors else ""
+    if overall_status == "failed" and not failure_reason:
+        failure_reason = error_summary or "Pipeline failed before detailed reason was captured."
+
+    # Extract quality_result as a top-level field for easier consumption by Repo 1
+    quality_result: dict[str, Any] = {}
+    for step_data in all_steps:
+        if isinstance(step_data, dict) and step_data.get("step") == "quality_gate":
+            quality_result = step_data
+            break
+    if not quality_result:
+        # Try reading directly from result_dir
+        quality_result = _read_json_safe(result_dir / "quality_gate.json")
+
+    result: dict[str, Any] = {
+        "contract_version": CONTRACT_VERSION,
+        "project_id": project_id,
+        "run_id": run_id,
+        "run_attempt": run_attempt,
+        "workflow_url": workflow_url,
+        "timestamp_utc": timestamp_utc,
+        "repo_url": repo_url,
+        "deployment_url": deployment_url,
+        "status": overall_status,
+        "run_mode": mode,
+        "idempotency_key": idempotency_key,
+        "steps": all_steps,
+        "deployment": {
+            "status": deployment_status,
+            "url": deployment_url,
+        },
+        "quality_result": quality_result,
+        "error_summary": error_summary,
+        "failure_reason": failure_reason,
+        "kill_candidate": kill_candidate,
+        "optimize_candidate": optimize_candidate,
+        "scale_candidate": scale_candidate,
+        "result_artifact": {
+            "name": f"factory-result-{run_id}-{run_attempt}",
+            "path": "factory-response.json",
+        },
+    }
+
+    # Always write factory-response.json to result_dir so the workflow can
+    # upload it even when result_file is not explicitly provided.
+    response_path = result_dir / "factory-response.json"
+    response_path.write_text(
+        json.dumps(result, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
+
+    if result_file and Path(result_file).resolve() != response_path.resolve():
+        maybe_write_result(result_file, result)
+
+    log_event(
+        project_id=project_id,
+        step=STEP_NAME,
+        status=overall_status,
+        mode=mode,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        error=error_summary,
+    )
+
+    print(json.dumps(result, ensure_ascii=True), flush=True)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
-    args = parse_args()
-    ctx = build_context(args)
+    parser = argparse.ArgumentParser(
+        description="AI-DAN Factory Orchestrator — run the full execution pipeline"
+    )
+    parser.add_argument("--brief-file", required=True, help="Path to BuildBrief v1 JSON file")
+    parser.add_argument("--project-id", required=True, help="Project slug (e.g. my-project-001)")
+    parser.add_argument(
+        "--state-db",
+        default="data/lifecycle.sqlite",
+        help="Path to SQLite lifecycle state database",
+    )
+    parser.add_argument(
+        "--result-dir",
+        default="",
+        help="Directory for per-run result JSON files (auto-created temp dir if omitted)",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Execute without real side effects")
+    parser.add_argument("--run-id", default="", help="Workflow run ID")
+    parser.add_argument("--run-attempt", default="1", help="Workflow run attempt number")
+    parser.add_argument("--workflow-url", default="", help="URL of the triggering workflow run")
+    parser.add_argument(
+        "--traffic-signal",
+        default="LOW",
+        choices=["LOW", "MEDIUM", "HIGH"],
+        help="Monitoring traffic signal",
+    )
+    parser.add_argument(
+        "--activation-metric",
+        default="LOW",
+        choices=["LOW", "MEDIUM", "HIGH"],
+        help="Monitoring activation metric",
+    )
+    parser.add_argument(
+        "--revenue-signal-status",
+        default="NONE",
+        choices=["NONE", "WEAK", "STRONG"],
+        help="Monitoring revenue signal",
+    )
+    parser.add_argument("--template-owner", default="", help="GitHub org/user owning the template repo")
+    parser.add_argument("--template-repo", default="", help="Template repository name")
+    parser.add_argument("--repo-org", default="", help="GitHub org to create the project repo in")
+    parser.add_argument("--result-file", default="", help="Path to write FactoryRunResult v1 JSON")
+    args = parser.parse_args()
 
-    orchestrator_error = ""
-    run_mode = "unknown"
+    brief_file = Path(args.brief_file).expanduser().resolve()
+    if not brief_file.is_file():
+        log_event(
+            project_id=args.project_id or "unknown",
+            step=STEP_NAME,
+            status="failed",
+            mode="startup",
+            error=f"BuildBrief file not found: {brief_file}",
+        )
+        raise SystemExit(1)
 
-    try:
-        normalized_inputs = input_stage(ctx)
-        run_mode = str(normalized_inputs.get("run_mode", "unknown"))
+    if args.result_dir:
+        result_dir = Path(args.result_dir).expanduser().resolve()
+    else:
+        result_dir = Path(tempfile.mkdtemp(prefix=f"factory-orchestrator-{args.project_id}-"))
 
-        if run_mode != "tests_only":
-            gate_data, run_mode = gate_stage(ctx, normalized_inputs)
-            discovery = discovery_stage(ctx, normalized_inputs)
-            repo_stage(ctx, normalized_inputs, gate_data, discovery)
-            build_stage(ctx)
-            deploy_stage(ctx, normalized_inputs)
-            quality_stage(ctx, normalized_inputs)
-            report_stage(ctx, normalized_inputs)
-    except OrchestratorError as exc:
-        orchestrator_error = str(exc)
-        print(f"[orchestrator] {orchestrator_error}", file=sys.stderr)
-    except Exception as exc:  # pragma: no cover
-        orchestrator_error = f"Unhandled orchestrator error: {exc}"
-        print(f"[orchestrator] {orchestrator_error}", file=sys.stderr)
+    result = run_pipeline(
+        brief_file=brief_file,
+        project_id=args.project_id,
+        state_db=args.state_db,
+        run_id=args.run_id or "local",
+        run_attempt=args.run_attempt,
+        workflow_url=args.workflow_url,
+        result_dir=result_dir,
+        dry_run=args.dry_run,
+        traffic_signal=args.traffic_signal,
+        activation_metric=args.activation_metric,
+        revenue_signal_status=args.revenue_signal_status,
+        template_owner=args.template_owner,
+        template_repo=args.template_repo,
+        repo_org=args.repo_org,
+        result_file=args.result_file,
+    )
 
-    response = finalize_result(ctx, run_mode=run_mode or "unknown", orchestrator_error=orchestrator_error)
-
-    output_file = os.environ.get("GITHUB_OUTPUT", "")
-    if output_file:
-        with open(output_file, "a", encoding="utf-8") as handle:
-            handle.write("factory_response<<EOF\n")
-            handle.write(json.dumps(response, ensure_ascii=True) + "\n")
-            handle.write("EOF\n")
-
-    print(json.dumps(response, ensure_ascii=True))
-    if response.get("status") == "failed":
+    if result.get("status") != "success":
         raise SystemExit(1)
 
 

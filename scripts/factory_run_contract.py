@@ -1,110 +1,92 @@
 #!/usr/bin/env python3
 """
-Canonical execution contracts for AI-DAN factory runs.
+Factory execution-plane contract definitions — BuildBrief v1 and FactoryRunResult v1.
+
+This module is the single source of truth for:
+  - contract version
+  - required and optional BuildBrief v1 fields
+  - FactoryRunResult v1 canonical output keys
+  - monitoring signal allowed values
+
+Import from here in factory_orchestrator, run_factory_tests, or any
+finalization logic instead of duplicating definitions.
+
+This repo is the *execution plane* — it receives BuildBrief payloads and
+returns FactoryRunResult payloads.  Business and project-level truth lives in
+the AI-DAN control plane (Repo 1).
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+# ---------------------------------------------------------------------------
+# Contract version
+# ---------------------------------------------------------------------------
 
-FACTORY_RUN_RESULT_VERSION = "FactoryRunResult.v1"
-BUILD_BRIEF_VERSION = "BuildBrief.v1"
+CONTRACT_VERSION = "v1"
 
-ALLOWED_RUN_STATUS = {"success", "failed"}
-ALLOWED_STEP_STATUS = {"success", "failed", "skipped"}
+# ---------------------------------------------------------------------------
+# BuildBrief v1
+# ---------------------------------------------------------------------------
 
-CANONICAL_STEP_ORDER = [
-    "normalize_inputs",
-    "automated_tests_only",
-    "lifecycle_idea",
-    "validate_brief",
-    "validate_business_gate",
-    "build_economics",
-    "build_control",
-    "repo_discovery",
-    "lifecycle_building",
-    "create_repo",
-    "inject_brief",
-    "business_output",
-    "deploy",
-    "deploy_health",
-    "quality_gate",
-    "lifecycle_deployed",
-    "lifecycle_monitored",
-    "monitoring_decision",
-    "distribution",
-    "notify_director",
-    "portfolio_summary",
-]
+# Required fields — validated by validate_brief.py before any execution
+BUILD_BRIEF_V1_REQUIRED_FIELDS: tuple[str, ...] = (
+    "project_id",
+    "product_name",
+    "problem",
+    "solution",
+    "cta",
+    "source_type",
+    "reference_context",
+    "demand_level",
+    "monetization_proof",
+    "market_saturation",
+    "differentiation",
+)
 
+# Optional enrichment fields — used for scoring and repo discovery when present
+BUILD_BRIEF_V1_OPTIONAL_FIELDS: tuple[str, ...] = (
+    "build_complexity",
+    "speed_to_revenue",
+    "target_user",
+    "product_type",
+    "preferred_language",
+    "idempotency_key",
+)
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# ---------------------------------------------------------------------------
+# FactoryRunResult v1
+# ---------------------------------------------------------------------------
 
+# Canonical top-level output keys — every factory-response.json must contain
+# all of these.  Downstream consumers (AI-DAN control plane) should read
+# exactly these fields.
+FACTORY_RUN_RESULT_V1_KEYS: tuple[str, ...] = (
+    "contract_version",
+    "project_id",
+    "run_id",
+    "run_attempt",
+    "workflow_url",
+    "timestamp_utc",
+    "repo_url",
+    "deployment_url",
+    "status",
+    "run_mode",
+    "idempotency_key",
+    "steps",
+    "deployment",
+    "quality_result",
+    "error_summary",
+    "failure_reason",
+    "kill_candidate",
+    "optimize_candidate",
+    "scale_candidate",
+    "result_artifact",
+)
 
-def _extract_error_message(value: Any, fallback: str = "") -> str:
-    """Extract a plain string error message from string or {code, message} dict."""
-    if isinstance(value, dict):
-        return str(value.get("message", "") or value.get("code", "") or fallback).strip()
-    return str(value or "").strip()
+# ---------------------------------------------------------------------------
+# Monitoring signal allowed values
+# ---------------------------------------------------------------------------
 
-
-def normalize_step(step_name: str, payload: dict[str, Any], run_mode: str) -> dict[str, Any]:
-    status = str(payload.get("status", "skipped")).strip().lower()
-    if status not in ALLOWED_STEP_STATUS:
-        status = "failed"
-
-    message = ""
-    if status == "failed":
-        message = (
-            _extract_error_message(payload.get("error", ""))
-            or _extract_error_message(payload.get("reason", ""))
-            or str(payload.get("error_summary", "")).strip()
-            or str(payload.get("failure_reason", "")).strip()
-            or f"{step_name} failed"
-        )
-
-    step: dict[str, Any] = {
-        "name": step_name,
-        "status": status,
-        "mode": str(payload.get("mode", run_mode)).strip() or run_mode,
-    }
-    if status == "failed":
-        step["error"] = {"code": "STEP_FAILED", "message": message}
-    return step
-
-
-def empty_result(*, project_id: str, run_id: str, run_attempt: str, workflow_url: str, run_mode: str) -> dict[str, Any]:
-    return {
-        "contract_version": FACTORY_RUN_RESULT_VERSION,
-        "build_brief_contract": BUILD_BRIEF_VERSION,
-        "project_id": project_id,
-        "run_id": run_id,
-        "run_attempt": run_attempt,
-        "workflow_url": workflow_url,
-        "timestamp_utc": utc_now(),
-        "status": "failed",
-        "run_mode": run_mode,
-        "repo_url": "",
-        "deployment_url": "",
-        "deployment": {"status": "not_started", "url": ""},
-        "idempotency_key": "",
-        "steps": [],
-        "error": {"code": "UNSPECIFIED_FAILURE", "message": "Execution did not complete."},
-        "error_summary": "",
-        "failure_reason": "",
-        "quality": {
-            "status": "not_available",
-            "score": None,
-            "decision": "not_available",
-            "reason": "",
-            "breakdown": {},
-        },
-        "execution_signals": {
-            "kill_candidate": False,
-            "optimize_candidate": False,
-            "scale_candidate": False,
-        },
-        "result_artifact": {"name": "", "path": "factory-response.json"},
-    }
+ALLOWED_TRAFFIC_SIGNALS: frozenset[str] = frozenset({"LOW", "MEDIUM", "HIGH"})
+ALLOWED_ACTIVATION_METRICS: frozenset[str] = frozenset({"LOW", "MEDIUM", "HIGH"})
+ALLOWED_REVENUE_SIGNALS: frozenset[str] = frozenset({"NONE", "WEAK", "STRONG"})
