@@ -45,7 +45,7 @@ def _post_webhook(
                     status="webhook_sent",
                     mode=mode,
                     http_status=resp.status,
-                    director_url=url,
+                    director_url=redact_secrets(url),
                 )
             return
         except urllib.error.HTTPError as exc:
