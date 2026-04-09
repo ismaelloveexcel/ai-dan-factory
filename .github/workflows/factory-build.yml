@@ -66,6 +66,7 @@ on:
 
 jobs:
   build:
+    timeout-minutes: 45
     concurrency:
       group: factory-build-${{ github.ref }}-${{ inputs.project_id || 'unknown' }}
       cancel-in-progress: true

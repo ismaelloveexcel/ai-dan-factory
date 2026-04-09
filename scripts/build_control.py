@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -131,8 +132,16 @@ def main() -> None:
     mode = "dry_run" if args.dry_run else "production"
     project_id = args.project_id.strip() or "unknown"
 
-    max_per_day = int(os.environ.get("MAX_BUILDS_PER_DAY", "20"))
-    max_parallel = int(os.environ.get("MAX_PARALLEL_BUILDS", "3"))
+    try:
+        max_per_day = int(os.environ.get("MAX_BUILDS_PER_DAY", "20"))
+    except ValueError:
+        logging.warning("MAX_BUILDS_PER_DAY is malformed, defaulting to 20")
+        max_per_day = 20
+    try:
+        max_parallel = int(os.environ.get("MAX_PARALLEL_BUILDS", "3"))
+    except ValueError:
+        logging.warning("MAX_PARALLEL_BUILDS is malformed, defaulting to 3")
+        max_parallel = 3
 
     log_event(project_id=project_id, step=STEP_NAME, status="started", mode=mode)
 

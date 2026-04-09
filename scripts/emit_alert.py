@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-from factory_utils import log_event, maybe_write_result
+from factory_utils import log_event, maybe_write_result, redact_secrets, validate_webhook_url
 
 STEP_NAME = "emit_alert"
 _DEFAULT_DIRECTOR_BASE_URL_ENV = "FACTORY_BASE_URL"
@@ -134,6 +134,18 @@ def main() -> None:
         return
 
     try:
+        validate_webhook_url(director_base_url.rstrip("/") + "/factory/webhook")
+    except ValueError as exc:
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="webhook_failed",
+            mode=mode,
+            error=redact_secrets(str(exc)),
+        )
+        return
+
+    try:
         _post_webhook(
             director_base_url=director_base_url,
             payload=payload,
@@ -146,7 +158,7 @@ def main() -> None:
             step=STEP_NAME,
             status="webhook_failed",
             mode=mode,
-            error=str(exc),
+            error=redact_secrets(str(exc)),
         )
 
 

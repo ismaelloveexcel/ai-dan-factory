@@ -13,6 +13,7 @@ on:
 
 jobs:
   monitor:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,7 +32,6 @@ jobs:
           set -euo pipefail
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-monitor-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
           STATE_DB="data/lifecycle.sqlite"
-          SIGNALS_OUT="$RESULT_DIR/monitoring_decisions.json"
           SUMMARY_OUT="$RESULT_DIR/portfolio_summary.json"
 
           MAX_ITEMS_PER_CATEGORY="${{ github.event.inputs.max_items_per_category }}"
