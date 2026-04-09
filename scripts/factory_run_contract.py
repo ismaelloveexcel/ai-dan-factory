@@ -43,6 +43,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _extract_error_message(value: Any, fallback: str = "") -> str:
+    """Extract a plain string error message from string or {code, message} dict."""
+    if isinstance(value, dict):
+        return str(value.get("message", "") or value.get("code", "") or fallback).strip()
+    return str(value or "").strip()
+
+
 def normalize_step(step_name: str, payload: dict[str, Any], run_mode: str) -> dict[str, Any]:
     status = str(payload.get("status", "skipped")).strip().lower()
     if status not in ALLOWED_STEP_STATUS:
@@ -51,8 +58,8 @@ def normalize_step(step_name: str, payload: dict[str, Any], run_mode: str) -> di
     message = ""
     if status == "failed":
         message = (
-            str(payload.get("error", "")).strip()
-            or str(payload.get("reason", "")).strip()
+            _extract_error_message(payload.get("error", ""))
+            or _extract_error_message(payload.get("reason", ""))
             or str(payload.get("error_summary", "")).strip()
             or str(payload.get("failure_reason", "")).strip()
             or f"{step_name} failed"

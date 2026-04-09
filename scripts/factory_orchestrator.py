@@ -189,7 +189,7 @@ def gate_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> tuple[dict[st
                 "step": "lifecycle_idea",
                 "status": "failed",
                 "mode": run_mode,
-                "error": (proc.stderr or proc.stdout or "").strip() or "Lifecycle initialization failed.",
+                "error": {"code": "LC_INIT_FAILED", "message": (proc.stderr or proc.stdout or "").strip() or "Lifecycle initialization failed."},
             },
         )
         raise OrchestratorError(
@@ -346,7 +346,7 @@ def repo_stage(ctx: Context, normalized_inputs: dict[str, Any], gate_data: dict[
                 "step": "lifecycle_building",
                 "status": "failed",
                 "mode": run_mode,
-                "error": (proc.stderr or proc.stdout or "").strip() or "Lifecycle transition to building failed.",
+                "error": {"code": "LC_BUILDING_FAILED", "message": (proc.stderr or proc.stdout or "").strip() or "Lifecycle transition to building failed."},
             },
         )
         raise OrchestratorError(
@@ -569,7 +569,7 @@ def deploy_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
                     "step": step,
                     "status": "failed",
                     "mode": run_mode,
-                    "error": error_output,
+                    "error": {"code": "LC_TRANSITION_FAILED", "message": error_output},
                 },
             )
             raise OrchestratorError(f"Lifecycle transition to {to_state} failed.")
@@ -656,7 +656,7 @@ def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
                     "step": "distribution",
                     "status": "failed",
                     "mode": "dry_run" if dry_run_effective else "production",
-                    "error": (dist_proc.stderr or dist_proc.stdout or "").strip() or "Distribution engine failed.",
+                    "error": {"code": "DISTRIBUTION_FAILED", "message": (dist_proc.stderr or dist_proc.stdout or "").strip() or "Distribution engine failed."},
                 },
             )
     else:
@@ -704,7 +704,7 @@ def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
                 "step": "notify_director",
                 "status": "failed",
                 "mode": "dry_run" if dry_run_effective else "production",
-                "error": (notify_proc.stderr or notify_proc.stdout or "").strip() or "Notify director failed.",
+                "error": {"code": "NOTIFY_FAILED", "message": (notify_proc.stderr or notify_proc.stdout or "").strip() or "Notify director failed."},
             },
         )
 
@@ -726,7 +726,7 @@ def report_stage(ctx: Context, normalized_inputs: dict[str, Any]) -> None:
                 "step": "portfolio_summary",
                 "status": "failed",
                 "mode": "dry_run" if dry_run_effective else "production",
-                "error": (portfolio_proc.stderr or portfolio_proc.stdout or "").strip() or "Portfolio summary failed.",
+                "error": {"code": "PORTFOLIO_FAILED", "message": (portfolio_proc.stderr or portfolio_proc.stdout or "").strip() or "Portfolio summary failed."},
             },
         )
 
