@@ -70,22 +70,24 @@ Minimum top-level fields:
 - `run_mode` (`tests_only` | `dry_run` | `production`)
 - `repo_url`
 - `deployment_url`
+- `idempotency_key`
 - `steps` (normalized step results)
-- `error` (canonical error object)
-- `quality` (normalized quality gate output)
+- `deployment` (canonical deployment object)
+- `quality_result` (normalized quality gate output)
+- `error_summary`
+- `failure_reason`
+- `kill_candidate`
+- `optimize_candidate`
+- `scale_candidate`
 - `result_artifact`
 
 ## Orchestration Shape
 
-The execution flow is implemented in Python orchestration stages:
-- `input_stage`
-- `gate_stage`
-- `discovery_stage`
-- `repo_stage`
-- `build_stage`
-- `deploy_stage`
-- `quality_stage`
-- `report_stage`
+The execution flow is implemented in three Python orchestration stages
+(defined in `factory_orchestrator.py`):
+- `input_stage` — validate brief, lifecycle init, business gate, economics, build control, repo discovery
+- `build_stage` — create repo, AI enhancement, inject brief, business output
+- `deploy_stage` — deploy, health check, quality gate, monitor, distribute
 
 GitHub Actions remains intentionally thin:
 - checkout

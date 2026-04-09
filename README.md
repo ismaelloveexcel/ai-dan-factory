@@ -55,6 +55,7 @@ Every decision is deterministic and auditable. AI enhancement via OpenAI generat
 │   ├── factory_utils.py               # Shared utilities
 │   ├── normalize_workflow_inputs.py   # Workflow input normalization
 │   ├── emit_alert.py                  # Failure alert payloads
+│   ├── notify_director.py             # Managing Director webhook notification
 │   └── run_factory_tests.py           # 11-stage automated test suite
 ├── templates/saas-template/           # Next.js 14 conversion-optimized landing page
 ├── test_data/                         # Test payloads and autonomous ideas
@@ -74,6 +75,7 @@ Copy `.env.example` to `.env` and fill in values. In GitHub Actions, set these a
 | `FACTORY_GITHUB_TOKEN` | Yes | PAT with `repo` scope for creating repositories and repo discovery |
 | `VERCEL_DEPLOY_HOOK_URL` | Yes | Vercel webhook URL for triggering deployments |
 | `OPENAI_API_KEY` | Recommended | OpenAI key for AI-generated copy (headlines, CTAs, descriptions) |
+| `FACTORY_BASE_URL` | No | Base URL of Managing Director for webhook notifications |
 | `TEMPLATE_OWNER` | No | Template repo owner (defaults to current repo owner) |
 | `TEMPLATE_REPO` | No | Template repo name (defaults to current repo name) |
 | `MAX_BUILDS_PER_DAY` | No | Daily build limit (default: 20) |
@@ -283,5 +285,6 @@ Every deployed product landing page includes:
 ## Documentation
 
 - [AI-DAN Integration Contract](docs/aidan_integration_contract.md)
+- [Execution Plane Architecture](docs/execution_plane_architecture.md)
 - [Operator Control Contract](docs/operator_control_contract.md)
 - [Live Run Checklist](docs/live_run_checklist.md)
