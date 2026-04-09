@@ -6,6 +6,7 @@ Shared utilities for factory scripts.
 from __future__ import annotations
 
 import hashlib
+import ipaddress as _ipaddress
 import json
 import os
 import re
@@ -107,8 +108,6 @@ def validate_webhook_url(url: str) -> str:
       - IP literals in private, reserved, loopback, or link-local ranges
         are rejected via the ``ipaddress`` module
     """
-    import ipaddress as _ipaddress
-
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(f"Webhook URL must use HTTPS scheme, got '{parsed.scheme}'")
@@ -125,13 +124,12 @@ def validate_webhook_url(url: str) -> str:
     # Reject IP literals in private/reserved/loopback/link-local ranges
     try:
         addr = _ipaddress.ip_address(hostname)
+    except ValueError:
+        # hostname is not an IP literal (e.g. a regular domain) — that's fine
+        pass
+    else:
         if addr.is_loopback or addr.is_private or addr.is_reserved or addr.is_link_local:
             raise ValueError(
                 f"Webhook URL must not target private/reserved address: '{hostname}'"
             )
-    except ValueError as exc:
-        # Re-raise our own ValueErrors; swallow parse failures (hostname is
-        # not an IP literal, which is fine).
-        if "must not target" in str(exc):
-            raise
     return url
