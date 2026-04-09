@@ -97,12 +97,41 @@ def stable_idempotency_key(project_id: str, brief: dict[str, str]) -> str:
 
 
 def validate_webhook_url(url: str) -> str:
-    """Validate and return a webhook URL; enforce HTTPS to mitigate SSRF."""
+    """Validate and return a webhook URL; enforce HTTPS to mitigate SSRF.
+
+    Checks:
+      - HTTPS scheme required
+      - Hostname must be present
+      - Hostname normalized (lowercase, trailing dot stripped) and checked
+        against localhost names
+      - IP literals in private, reserved, loopback, or link-local ranges
+        are rejected via the ``ipaddress`` module
+    """
+    import ipaddress as _ipaddress
+
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(f"Webhook URL must use HTTPS scheme, got '{parsed.scheme}'")
     if not parsed.hostname:
         raise ValueError("Webhook URL has no hostname")
-    if parsed.hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-        raise ValueError(f"Webhook URL must not target localhost: '{parsed.hostname}'")
+
+    # Normalize: lowercase + strip trailing dot (FQDN form)
+    hostname = parsed.hostname.lower().rstrip(".")
+
+    _BLOCKED_HOSTNAMES = {"localhost"}
+    if hostname in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"Webhook URL must not target localhost: '{hostname}'")
+
+    # Reject IP literals in private/reserved/loopback/link-local ranges
+    try:
+        addr = _ipaddress.ip_address(hostname)
+        if addr.is_loopback or addr.is_private or addr.is_reserved or addr.is_link_local:
+            raise ValueError(
+                f"Webhook URL must not target private/reserved address: '{hostname}'"
+            )
+    except ValueError as exc:
+        # Re-raise our own ValueErrors; swallow parse failures (hostname is
+        # not an IP literal, which is fine).
+        if "must not target" in str(exc):
+            raise
     return url

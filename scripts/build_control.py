@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -135,12 +134,28 @@ def main() -> None:
     try:
         max_per_day = int(os.environ.get("MAX_BUILDS_PER_DAY", "20"))
     except ValueError:
-        logging.warning("MAX_BUILDS_PER_DAY is malformed, defaulting to 20")
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="warning",
+            mode=mode,
+            message="MAX_BUILDS_PER_DAY is malformed, defaulting to 20",
+            env_var="MAX_BUILDS_PER_DAY",
+            fallback_value=20,
+        )
         max_per_day = 20
     try:
         max_parallel = int(os.environ.get("MAX_PARALLEL_BUILDS", "3"))
     except ValueError:
-        logging.warning("MAX_PARALLEL_BUILDS is malformed, defaulting to 3")
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="warning",
+            mode=mode,
+            message="MAX_PARALLEL_BUILDS is malformed, defaulting to 3",
+            env_var="MAX_PARALLEL_BUILDS",
+            fallback_value=3,
+        )
         max_parallel = 3
 
     log_event(project_id=project_id, step=STEP_NAME, status="started", mode=mode)
