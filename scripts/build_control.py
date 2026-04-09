@@ -135,14 +135,18 @@ def main() -> None:
         max_per_day = int(os.environ.get("MAX_BUILDS_PER_DAY", "20"))
     except ValueError:
         max_per_day = 20
-        log_event(project_id=project_id, step=STEP_NAME, status="warning", mode=mode,
-                  error="Invalid MAX_BUILDS_PER_DAY value; using default 20")
+        log_event(
+            project_id=project_id, step=STEP_NAME, status="warning",
+            mode=mode, error="Invalid MAX_BUILDS_PER_DAY value; using default 20",
+        )
     try:
         max_parallel = int(os.environ.get("MAX_PARALLEL_BUILDS", "3"))
     except ValueError:
         max_parallel = 3
-        log_event(project_id=project_id, step=STEP_NAME, status="warning", mode=mode,
-                  error="Invalid MAX_PARALLEL_BUILDS value; using default 3")
+        log_event(
+            project_id=project_id, step=STEP_NAME, status="warning",
+            mode=mode, error="Invalid MAX_PARALLEL_BUILDS value; using default 3",
+        )
 
     log_event(project_id=project_id, step=STEP_NAME, status="started", mode=mode)
 
