@@ -133,13 +133,12 @@ def build_business_output(brief: dict[str, Any]) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "headline": headline,
-        "CTA": cta,
+        "cta": cta,
         "monetization_model": monetization_model,
         "pricing_suggestion": pricing_suggestion,
         "offer_structure": offer_structure,
         "gtm_plan": gtm_plan,
         "target_user": target_user,
-        "monetization_method": monetization_model,
         "pricing_hint": pricing_suggestion,
         "distribution_plan": distribution_plan,
         "conversion_hints": {

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL")
+SENSITIVE_ENV_VARS = ("GITHUB_TOKEN", "FACTORY_GITHUB_TOKEN", "VERCEL_DEPLOY_HOOK_URL", "FACTORY_BASE_URL")
 
 
 def utc_timestamp() -> str:
@@ -64,10 +64,16 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def atomic_write_text(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp_file:
-        tmp_file.write(contents)
-        temp_path = Path(tmp_file.name)
-    temp_path.replace(path)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp_file:
+            tmp_file.write(contents)
+            temp_path = Path(tmp_file.name)
+        temp_path.replace(path)
+    except BaseException:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        raise
 
 
 def maybe_write_result(result_file: str, payload: dict[str, Any]) -> None:

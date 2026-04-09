@@ -70,6 +70,7 @@ jobs:
       group: factory-build-${{ github.ref }}-${{ inputs.project_id || 'unknown' }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     outputs:
@@ -151,9 +152,10 @@ jobs:
           print(f"DEPRECATED_TEST_MODE_REQUESTED={as_bool(data.get('deprecated_test_mode_requested'))}")
           PY
 
-          if [ "${DEPRECATED_TEST_MODE_REQUESTED}" = "true" ]; then
-            echo "::warning::Input 'test_mode' is deprecated. Use 'run_automated_tests_only' instead."
-          fi
+      - name: 4b) Warn on deprecated test_mode input
+        if: env.DEPRECATED_TEST_MODE_REQUESTED == 'true'
+        run: |
+          echo "::warning::Input 'test_mode' is deprecated. Use 'run_automated_tests_only' instead."
 
       - name: 5) Run automated tests only
         if: env.RUN_MODE == 'tests_only'
@@ -249,7 +251,7 @@ jobs:
                   print("DEPLOYMENT_URL=")
           PY
 
-      - name: 17.6) Notify Managing Director
+      - name: 8) Notify Managing Director
         if: always()
         env:
           FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
@@ -330,7 +332,7 @@ jobs:
 
           python scripts/notify_director.py "${NOTIFY_ARGS[@]}" || true
 
-      - name: 18) Portfolio simplified summary
+      - name: 9) Portfolio simplified summary
         if: always()
         run: |
           set -euo pipefail
@@ -342,7 +344,7 @@ jobs:
             --state-db "$STATE_DB" \
             --result-file "$RESULT_DIR/portfolio_summary.json" || true
 
-      - name: 19) Finalize factory response
+      - name: 10) Finalize factory response
         if: always()
         id: finalize
         env:
@@ -477,7 +479,7 @@ jobs:
           print("\n".join(lines))
           PY
 
-      - name: 20) Emit alert payload on failure
+      - name: 11) Emit alert payload on failure
         if: failure()
         env:
           FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
@@ -492,7 +494,7 @@ jobs:
             --error-summary "Check factory-response.json and step logs for details" \
             --result-file "$RESULT_DIR/alert_payload.json"
 
-      - name: 21) Upload result artifacts
+      - name: 12) Upload result artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
