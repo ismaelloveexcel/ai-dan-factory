@@ -81,7 +81,6 @@ jobs:
       group: factory-build-${{ github.ref }}-${{ inputs.project_id || 'unknown' }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     permissions:
       contents: read
     outputs:
@@ -434,6 +433,30 @@ jobs:
 
           python scripts/factory_callback.py "${CALLBACK_ARGS[@]}" || true
 
+      - name: 8c) Generate launch assets
+        if: env.RUN_MODE != 'tests_only'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEPLOYMENT_URL: ${{ env.DEPLOYMENT_URL }}
+          BRIEF_FILE: ${{ env.BRIEF_FILE }}
+          RESULT_DIR: ${{ env.RESULT_DIR }}
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN:-false}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          DEPLOY_URL="${DEPLOYMENT_URL:-https://${{ inputs.project_id }}.vercel.app}"
+
+          python scripts/launch_assets_engine.py \
+            --brief-file "${BRIEF_FILE}" \
+            --deployment-url "$DEPLOY_URL" \
+            --project-id "${PROJECT_ID_INPUT:-${{ inputs.project_id }}}" \
+            --output-dir "${RESULT_DIR}" \
+            --result-file "${RESULT_DIR}/launch_assets.json" \
+            $DRY_RUN_FLAG || true
+
       - name: 9) Portfolio simplified summary
         if: always()
         run: |
@@ -566,6 +589,7 @@ jobs:
               f"WORKFLOW URL: {response.get('workflow_url', '')}",
               f"REPO: {response.get('repo_url', 'not-created')}",
               f"DEPLOYMENT: {response.get('deployment_url', 'not-available')}",
+              f"LAUNCH ASSETS: {'See LAUNCH_ASSETS.md in artifacts' if response.get('deployment_url') else 'not-generated'}",
               f"IDEMPOTENCY KEY: {response.get('idempotency_key', 'not-available')}",
               f"CONTRACT VERSION: {response.get('contract_version', 'v1')}",
               f"ERROR SUMMARY: {response.get('error_summary', 'none') or 'none'}",
@@ -606,4 +630,5 @@ jobs:
             ${{ env.RESULT_DIR }}/factory-response.json
             ${{ env.RESULT_DIR }}/*.json
             ${{ env.RESULT_DIR }}/*.log
+            ${{ env.RESULT_DIR }}/LAUNCH_ASSETS.md
             data/lifecycle.sqlite
