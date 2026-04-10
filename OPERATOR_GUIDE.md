@@ -53,15 +53,13 @@ That's it. Do not use any other path.
   "product_name": "Your Product Name",
   "problem": "One sentence: what pain does this solve?",
   "solution": "One sentence: what does it do?",
-  "target_audience": "Who pays for this?",
-  "pricing": "$X/month or $Y one-time",
   "cta": "Start free trial",
+  "source_type": "GAP",
+  "reference_context": "Brief description of the market gap or trend you identified",
   "demand_level": "MEDIUM",
   "monetization_proof": "YES",
-  "competition_saturation": "MEDIUM",
-  "differentiation_strength": "STRONG",
-  "speed_to_launch_days": 3,
-  "template": "saas-template"
+  "market_saturation": "MEDIUM",
+  "differentiation": "STRONG"
 }
 ```
 
@@ -71,8 +69,9 @@ That's it. Do not use any other path.
 |-------|--------|-------------------|
 | `demand_level` | `LOW`, `MEDIUM`, `HIGH` | = `LOW` |
 | `monetization_proof` | `YES`, `NO` | = `NO` |
-| `competition_saturation` | `LOW`, `MEDIUM`, `HIGH` | `HIGH` + `WEAK` differentiation |
-| `differentiation_strength` | `WEAK`, `MODERATE`, `STRONG` | see above |
+| `source_type` | `TREND`, `COMPETITOR`, `GAP`, `EXISTING_PRODUCT` | not one of these |
+| `market_saturation` | `LOW`, `MEDIUM`, `HIGH` | `HIGH` + `WEAK` differentiation |
+| `differentiation` | `WEAK`, `STRONG` | `WEAK` when `market_saturation` = `HIGH` |
 
 ---
 

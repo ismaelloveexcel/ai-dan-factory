@@ -589,7 +589,7 @@ jobs:
               f"WORKFLOW URL: {response.get('workflow_url', '')}",
               f"REPO: {response.get('repo_url', 'not-created')}",
               f"DEPLOYMENT: {response.get('deployment_url', 'not-available')}",
-              f"LAUNCH ASSETS: {'See LAUNCH_ASSETS.md in artifacts' if response.get('deployment_url') else 'not-generated'}",
+              f"LAUNCH ASSETS: {'See LAUNCH_ASSETS.md in artifacts' if (Path(os.environ['RESULT_DIR']) / 'LAUNCH_ASSETS.md').is_file() else 'not-generated'}",
               f"IDEMPOTENCY KEY: {response.get('idempotency_key', 'not-available')}",
               f"CONTRACT VERSION: {response.get('contract_version', 'v1')}",
               f"ERROR SUMMARY: {response.get('error_summary', 'none') or 'none'}",

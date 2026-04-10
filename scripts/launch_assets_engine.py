@@ -9,7 +9,7 @@ Given the product brief and live deployment URL, generates:
   4. Launch checklist         — ordered actions for the first 48 h
 
 Outputs:
-  - LAUNCH_ASSETS.md  (human-readable, injected into the generated repo)
+  - LAUNCH_ASSETS.md  (human-readable, written to the output directory)
   - <result-file>.json (machine-readable for callbacks and the Managing Director)
 
 Falls back to deterministic templates when OPENAI_API_KEY is not set,
