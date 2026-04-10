@@ -122,6 +122,7 @@ def compile_check() -> None:
         "scripts/factory_callback.py",
         "scripts/validate_env.py",
         "scripts/run_integration_tests.py",
+        "scripts/launch_assets_engine.py",
     ]
     run_command([sys.executable, "-m", "py_compile", *scripts], expect_success=True)
 
@@ -839,6 +840,34 @@ def quality_economics_distribution_tests() -> None:
             raise TestFailure("build_control decision must be ALLOWED/BLOCKED")
         if not control.get("priority"):
             raise TestFailure("build_control must include priority")
+
+        # Test launch assets engine (dry-run, no API key)
+        launch_result = tmp / "launch_assets.json"
+        launch_output_dir = tmp / "launch_output"
+        run_command(
+            [
+                sys.executable,
+                "scripts/launch_assets_engine.py",
+                "--brief-file",
+                str(normalized),
+                "--deployment-url",
+                "https://test-001.vercel.app",
+                "--project-id",
+                "test-001",
+                "--output-dir",
+                str(launch_output_dir),
+                "--result-file",
+                str(launch_result),
+                "--dry-run",
+            ],
+            expect_success=True,
+        )
+        launch = read_json(launch_result)
+        if launch.get("quality_level") != "reduced":
+            raise TestFailure("launch_assets_engine dry-run should produce reduced quality level")
+        launch_md = launch_output_dir / "LAUNCH_ASSETS.md"
+        if not launch_md.is_file():
+            raise TestFailure("launch_assets_engine must produce LAUNCH_ASSETS.md")
 
 
 def e2e_simulation_tests() -> None:

@@ -13,6 +13,14 @@ on:
         options:
           - "true"
           - "false"
+      live_mode:
+        description: "Trigger a real factory build for approved ideas (default: score only)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: factory-autonomous-runner-${{ github.ref }}
@@ -22,9 +30,9 @@ jobs:
   run:
     timeout-minutes: 30
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
       contents: read
+      actions: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,6 +45,8 @@ jobs:
       - name: Run autonomous source-score-gate loop
         env:
           RUN_FULL_TEST_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_test_suite || 'true' }}
+          LIVE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.live_mode || 'false' }}
+          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RESULT_DIR="$(mktemp -d "$RUNNER_TEMP/factory-autonomous-${{ github.run_id }}-${{ github.run_attempt }}-XXXXXX")"
@@ -78,6 +88,12 @@ jobs:
             --brief-file "$SELECTED_BRIEF" \
             --result-file "$RESULT_DIR/scoring.json"
 
+          # Use dry_run mode during daily schedule; live_mode must be explicitly enabled
+          RUN_MODE_FLAG="dry_run"
+          if [ "$LIVE_MODE" = "true" ]; then
+            RUN_MODE_FLAG="live"
+          fi
+
           python scripts/validate_business_gate.py \
             --brief-file "$SELECTED_BRIEF" \
             --result-file "$RESULT_DIR/business_gate.json" \
@@ -86,7 +102,37 @@ jobs:
             --workflow-run-attempt "${{ github.run_attempt }}" \
             --workflow-url "$WORKFLOW_URL" \
             --timestamp-utc "$TIMESTAMP_UTC" \
-            --run-mode dry_run
+            --run-mode "$RUN_MODE_FLAG"
+
+          # If live_mode=true and idea was approved, dispatch the real factory build
+          if [ "$LIVE_MODE" = "true" ]; then
+            GATE_STATUS="$(python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["RESULT_DIR"], "business_gate.json")
+          try:
+              data = json.loads(open(p).read())
+              print(data.get("gate_decision", "reject"))
+          except Exception:
+              print("reject")
+          PY
+            )"
+            echo "GATE_DECISION=$GATE_STATUS" >> "$GITHUB_ENV"
+
+            if [ "$GATE_STATUS" = "approve" ]; then
+              echo "[autonomous] Idea approved in live_mode — dispatching factory-build workflow"
+              BRIEF_JSON="$(cat "$SELECTED_BRIEF")"
+              gh workflow run factory-build.yml \
+                --repo "${{ github.repository }}" \
+                --ref "${{ github.ref_name }}" \
+                --field "project_id=$PROJECT_ID" \
+                --field "build_brief_json=$BRIEF_JSON" \
+                --field "dry_run=false" \
+                --field "correlation_id=autonomous-${{ github.run_id }}"
+              echo "[autonomous] factory-build.yml dispatched for $PROJECT_ID"
+            else
+              echo "[autonomous] Idea scored but did not pass gate ($GATE_STATUS) — no build triggered"
+            fi
+          fi
 
           if [ "$RUN_FULL_TEST_SUITE" = "true" ]; then
             python scripts/run_factory_tests.py > "$RESULT_DIR/test_suite.log" 2>&1
