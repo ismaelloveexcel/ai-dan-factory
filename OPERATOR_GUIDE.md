@@ -30,6 +30,74 @@ You copy-paste the assets and go sell
 
 ---
 
+## Your Active Projects
+
+These are the three products in your venture pipeline. Each has a scored brief in `test_data/product_briefs.json`.
+
+| Project | Status | Priority | Existing Repo |
+|---------|--------|----------|---------------|
+| **GameForge Digital Gifts** | APPROVED — build now | 🔴 **#1 Priority** | [gameforge-mobile](https://github.com/ismaelloveexcel/gameforge-mobile) |
+| **Sparks — Dating Through Games** | APPROVED — validate first | 🟡 #2 Priority | None (concept stage) |
+| **EduGate** | HOLD — validate with real users | ⚪ #3 Priority | [EduGate](https://github.com/ismaelloveexcel/EduGate) |
+
+**Start with GameForge.** It has the clearest buyer, fastest path to revenue, and lowest competition. See `test_data/product_briefs.json` for full scoring and next steps.
+
+---
+
+## Getting Your First API Keys
+
+You need at least one AI key to score ideas with intelligence (not just rule-based scoring). Here’s where to get each one, ordered by recommendation.
+
+### 1. ANTHROPIC_API_KEY (Best for idea scoring)
+- Go to [console.anthropic.com](https://console.anthropic.com)
+- Sign up, then go to **API Keys** → **Create Key**
+- Copy the key (you only see it once)
+- Best model: `claude-3-5-sonnet-20241022` (already set as default)
+- Cost: ~$3 per million tokens — very affordable for scoring
+
+### 2. GROQ_API_KEY (Free tier, very fast)
+- Go to [console.groq.com](https://console.groq.com)
+- Sign up for free — no credit card required
+- Go to **API Keys** → **Create API Key**
+- Free tier includes generous daily limits
+- Best for: quick scoring runs, high-volume testing
+
+### 3. DEEPSEEK_API_KEY (Cheapest option)
+- Go to [platform.deepseek.com](https://platform.deepseek.com)
+- Sign up and top up a small amount ($5 goes a long way)
+- Go to **API Keys** → **Create new key**
+- Cost: ~$0.14 per million tokens — the cheapest quality model available
+- Best for: high-volume scoring on a tight budget
+
+### 4. TELEGRAM_BOT_TOKEN (Get notified when builds finish)
+Set this up once and you’ll get an instant Telegram message every time a build succeeds, fails, or an idea is approved.
+
+**3-minute setup:**
+1. Open Telegram, search **@BotFather**
+2. Send `/newbot` and follow the prompts (give your bot any name)
+3. BotFather gives you a token like `123456:ABCdefGHIjklMNO` — that’s your `TELEGRAM_BOT_TOKEN`
+4. Start a chat with your new bot (search its username, press Start)
+5. Open this URL in your browser (replace TOKEN with yours):  
+   `https://api.telegram.org/botTOKEN/getUpdates`
+6. Find `"chat":{"id":XXXXXXXX}` in the response — that number is your `TELEGRAM_CHAT_ID`
+
+### Where to add your keys
+
+**For the `aidan-managing-director` Vercel deployment:**
+1. Go to [vercel.com](https://vercel.com) → your project → **Settings** → **Environment Variables**
+2. Add each key as a new variable (name must match exactly, e.g. `ANTHROPIC_API_KEY`)
+3. Click **Save**
+4. Go to **Deployments** → click the three dots on the latest deployment → **Redeploy**
+
+The system picks up the new keys automatically after redeployment.
+
+**For GitHub Actions (factory workflows):**
+1. Go to your `ai-dan-factory` repo → **Settings** → **Secrets and variables** → **Actions**
+2. Click **New repository secret** for each key
+3. Workflows automatically use these on the next run
+
+---
+
 ## The ONE canonical build path
 
 There is only one way to trigger a real build:
@@ -41,7 +109,7 @@ Inputs:
 - `build_brief_json` — paste your brief JSON (see template below)
 - `dry_run` — `false` for a real build, `true` to test without deploying
 
-That's it. Do not use any other path.
+That’s it. Do not use any other path.
 
 ---
 
@@ -85,7 +153,7 @@ After the workflow completes:
    - `LAUNCH_ASSETS.md` — your launch copy (paste, post, sell)
    - `factory-response.json` — full build report
 
-**Always check Artifacts first** after a build. That's where your launch copy lives.
+**Always check Artifacts first** after a build. That’s where your launch copy lives.
 
 ---
 
@@ -132,7 +200,7 @@ The `LAUNCH_ASSETS.md` file in your build artifacts has the exact copy. Use this
 4. **Hour 3** — Post in 2-3 relevant Reddit communities
 5. **Day 1** — Reply to every response personally
 6. **Day 1** — Check Stripe — if zero payments, do more outreach (not more posting)
-7. **Day 2** — Email signups who didn't pay — ask what stopped them
+7. **Day 2** — Email signups who didn’t pay — ask what stopped them
 8. **Day 3** — Decide: kill, iterate, or scale
 
 **The rule: talk to humans before building more features.**
@@ -146,8 +214,9 @@ The `LAUNCH_ASSETS.md` file in your build artifacts has the exact copy. Use this
 | Build fails immediately | Check secrets are set: `FACTORY_GITHUB_TOKEN`, `VERCEL_DEPLOY_HOOK_URL` |
 | Repo created but no Vercel URL | Check `VERCEL_DEPLOY_HOOK_URL` is the correct hook for the right Vercel project |
 | Idea rejected at gate | Check `demand_level` ≠ `LOW` and `monetization_proof` = `YES` |
-| Launch assets say "reduced quality" | Set `OPENAI_API_KEY` in repository secrets |
+| Launch assets say “reduced quality” | Set `OPENAI_API_KEY` in repository secrets |
 | Callback to Managing Director failing | Check `FACTORY_BASE_URL` and `FACTORY_SECRET` match across both repos |
+| No Telegram notifications | Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in Vercel env vars |
 
 ---
 
