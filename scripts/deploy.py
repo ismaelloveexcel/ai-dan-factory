@@ -24,6 +24,12 @@ class DeployError(Exception):
 
 
 def _extract_deployment_url(raw_body: str) -> str:
+    """
+    Extract a deployment URL from a Vercel hook response.
+
+    Vercel deploy hooks return {"job": {"id": "...", "state": "pending"}} — no URL.
+    This function handles that and falls back gracefully.
+    """
     if not raw_body:
         return ""
     try:
@@ -37,6 +43,17 @@ def _extract_deployment_url(raw_body: str) -> str:
             if isinstance(value, str) and value.startswith(("http://", "https://")):
                 return value
     return ""
+
+
+def _build_production_url(project_id: str) -> str:
+    """
+    Construct the predictable Vercel production URL from the project slug.
+
+    When a project is deployed to Vercel, its production domain is always
+    https://{project-name}.vercel.app unless a custom domain is configured.
+    This gives us a reliable URL even when the deploy hook response has none.
+    """
+    return f"https://{project_id}.vercel.app"
 
 
 def trigger_deploy(
@@ -154,6 +171,20 @@ def main() -> None:
             timeout=args.request_timeout,
             max_retries=args.max_retries,
         )
+
+        # Vercel deploy hooks return a job ID, not a URL.
+        # Fall back to the predictable production URL from the project slug.
+        if not deployment_url:
+            deployment_url = _build_production_url(project_id)
+            log_event(
+                project_id=project_id,
+                step=STEP_NAME,
+                status="info",
+                mode=mode,
+                idempotency_key=idempotency_key,
+                note="Hook response contained no URL; using predictable production URL.",
+                deployment_url=deployment_url,
+            )
 
         result_payload = {
             "project_id": project_id,
