@@ -1,307 +1,501 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import CtaForm from "./CtaForm";
+"use client";
 
-type ProductBrief = {
-  productName: string;
-  problem: string;
-  solution: string;
-  cta: string;
+import { useEffect, useMemo, useState } from "react";
+
+type Mode = "venture" | "personal";
+type Confidence = "High" | "Medium" | "Low";
+type Recommendation = "Build Now" | "Refine" | "Drop";
+type AppState = "empty" | "loading" | "analyzed" | "building" | "live" | "failed";
+
+type DecisionSignal = {
+  name: "Demand" | "Monetization" | "Speed" | "Competition";
+  score: number;
 };
 
-type ProductConfig = {
-  headline?: string;
-  subheading?: string;
-  description?: string;
-  cta_text?: string;
-  short_pitch?: string;
-  benefit_bullets?: string[];
-  target_user?: string;
-  monetization_method?: string;
-  pricing_hint?: string;
+type AnalysisResult = {
+  ideaName: string;
+  mode: Mode;
+  recommendation: Recommendation;
+  reason: string;
+  founderInsight: string;
+  confidence: Confidence;
+  timeToLaunch: string;
+  signals: DecisionSignal[];
+  source: "brief_fields" | "idea_text";
 };
 
-const FALLBACK_BRIEF: ProductBrief = {
-  productName: "",
-  problem: "",
-  solution: "",
-  cta: "",
+type BuildResult = {
+  accepted: boolean;
+  buildBackendConnected: boolean;
+  message: string;
+  liveUrl?: string;
+  repoUrl?: string;
+  health?: "healthy" | "pending" | "issue";
 };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+type ProjectItem = {
+  id: string;
+  name: string;
+  mode: Mode;
+  status: "Analyzed" | "Building" | "Live" | "Failed";
+  recommendation: Recommendation;
+  score: number;
+};
+
+const BUILD_STEPS = [
+  "Idea validated",
+  "Template selected",
+  "Copy prepared",
+  "Deploying",
+  "Live",
+] as const;
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function extractSection(markdown: string, sectionTitle: string): string {
-  const heading = escapeRegExp(sectionTitle);
-  const regex = new RegExp(`^##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|\\n#\\s+|$)`, "im");
-  const match = markdown.match(regex);
-  return match?.[1]?.trim() ?? "";
+function averageSignal(signals: DecisionSignal[]): number {
+  if (!signals.length) return 0;
+  return Math.round(signals.reduce((acc, item) => acc + item.score, 0) / signals.length);
 }
 
-async function loadProductBrief(): Promise<ProductBrief> {
-  const briefPath = path.join(process.cwd(), "PRODUCT_BRIEF.md");
-  try {
-    const markdown = await readFile(briefPath, "utf-8");
+function outputsFor(analysis: AnalysisResult) {
+  const strengths = [...analysis.signals].sort((a, b) => b.score - a.score);
+  const topSignal = strengths[0]?.name ?? "Demand";
+
+  if (analysis.mode === "venture") {
     return {
-      productName: extractSection(markdown, "Product Name") || FALLBACK_BRIEF.productName,
-      problem: extractSection(markdown, "Problem") || FALLBACK_BRIEF.problem,
-      solution: extractSection(markdown, "Solution") || FALLBACK_BRIEF.solution,
-      cta: extractSection(markdown, "CTA") || FALLBACK_BRIEF.cta,
+      title: "Outputs",
+      cards: [
+        {
+          label: "Launch copy",
+          value: `${analysis.ideaName}: ${analysis.reason}`,
+        },
+        {
+          label: "Outreach copy",
+          value: `Testing ${analysis.ideaName} with ${topSignal.toLowerCase()} as the lead angle. Interested in trying the first version this week?`,
+        },
+        {
+          label: "Share assets",
+          value: `One-page pitch + short founder note focused on ${topSignal.toLowerCase()} and ${analysis.timeToLaunch.toLowerCase()} execution speed.`,
+        },
+      ],
     };
-  } catch {
-    return FALLBACK_BRIEF;
   }
+
+  return {
+    title: "Outputs",
+    cards: [
+      {
+        label: "Purpose",
+        value: `Build ${analysis.ideaName} to remove repeated friction in your weekly workflow.`,
+      },
+      {
+        label: "Workflow benefit",
+        value: `Primary win: better ${topSignal.toLowerCase()} decisions with less context switching.`,
+      },
+      {
+        label: "Internal usage notes",
+        value: `Start with one core flow, then tighten it over ${analysis.timeToLaunch.toLowerCase()} based on daily use.`,
+      },
+    ],
+  };
 }
 
-async function loadProductConfig(): Promise<ProductConfig> {
-  const configPath = path.join(process.cwd(), "product.config.json");
-  try {
-    const raw = await readFile(configPath, "utf-8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      headline: typeof parsed.headline === "string" ? parsed.headline : undefined,
-      subheading: typeof parsed.subheading === "string" ? parsed.subheading : undefined,
-      description: typeof parsed.description === "string" ? parsed.description : undefined,
-      cta_text: typeof parsed.cta_text === "string" ? parsed.cta_text : undefined,
-      short_pitch: typeof parsed.short_pitch === "string" ? parsed.short_pitch : undefined,
-      benefit_bullets: Array.isArray(parsed.benefit_bullets) ? parsed.benefit_bullets.filter((b): b is string => typeof b === "string") : undefined,
-      target_user: typeof parsed.target_user === "string" ? parsed.target_user : undefined,
-      monetization_method: typeof parsed.monetization_method === "string" ? parsed.monetization_method : undefined,
-      pricing_hint: typeof parsed.pricing_hint === "string" ? parsed.pricing_hint : undefined,
-    };
-  } catch {
-    return {};
+export default function Home() {
+  const [mode, setMode] = useState<Mode>("venture");
+  const [idea, setIdea] = useState("");
+  const [appState, setAppState] = useState<AppState>("empty");
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
+  const [buildStepIndex, setBuildStepIndex] = useState(0);
+  const [failureMessage, setFailureMessage] = useState("");
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+
+  const repoUrl = process.env.NEXT_PUBLIC_REPO_URL || "";
+  const defaultLiveUrl = process.env.NEXT_PUBLIC_LIVE_URL || "";
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem("aidan-projects");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as ProjectItem[];
+      if (Array.isArray(parsed)) {
+        setProjects(parsed.slice(0, 8));
+      }
+    } catch {
+      // ignore invalid cached state
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("aidan-projects", JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    if (appState !== "building") return;
+
+    const interval = window.setInterval(() => {
+      setBuildStepIndex((current) => {
+        if (current >= BUILD_STEPS.length - 2) {
+          window.clearInterval(interval);
+          return current;
+        }
+        return current + 1;
+      });
+    }, 1300);
+
+    return () => window.clearInterval(interval);
+  }, [appState]);
+
+  const score = useMemo(() => {
+    if (!analysis) return 0;
+    return averageSignal(analysis.signals);
+  }, [analysis]);
+
+  const canAnalyze = idea.trim().length >= 12;
+
+  async function handleAnalyze() {
+    if (!canAnalyze) return;
+
+    setFailureMessage("");
+    setBuildResult(null);
+    setBuildStepIndex(0);
+    setAppState("loading");
+
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idea, mode }),
+      });
+
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setFailureMessage(body.error || "Analysis failed. Please try again.");
+        setAppState("failed");
+        return;
+      }
+
+      const result = (await res.json()) as AnalysisResult;
+      setAnalysis(result);
+      setAppState("analyzed");
+
+      const item: ProjectItem = {
+        id: `${Date.now()}`,
+        name: result.ideaName,
+        mode,
+        status: "Analyzed",
+        recommendation: result.recommendation,
+        score: averageSignal(result.signals),
+      };
+      setProjects((prev) => [item, ...prev].slice(0, 8));
+    } catch {
+      setFailureMessage("We could not analyze this idea right now. Please retry.");
+      setAppState("failed");
+    }
   }
-}
 
-export default async function Home() {
-  const brief = await loadProductBrief();
-  const config = await loadProductConfig();
+  async function handleBuildNow() {
+    if (!analysis) return;
 
-  if (!brief.productName && !config.headline) {
-    throw new Error(
-      "Missing product configuration: PRODUCT_BRIEF.md not found and product.config.json has no headline. " +
-      "Deploy will not serve a placeholder — configure your product first."
-    );
+    setFailureMessage("");
+    setBuildResult(null);
+    setBuildStepIndex(0);
+    setAppState("building");
+
+    try {
+      const res = await fetch("/api/factory-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idea, mode, analysis }),
+      });
+
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setFailureMessage(body.error || "Build failed to start. Please retry.");
+        setAppState("failed");
+        return;
+      }
+
+      const result = (await res.json()) as BuildResult;
+      setBuildResult(result);
+
+      if (!result.buildBackendConnected) {
+        setFailureMessage(result.message);
+        setAppState("failed");
+      } else if (result.liveUrl) {
+        setBuildStepIndex(BUILD_STEPS.length - 1);
+        setAppState("live");
+      }
+
+      setProjects((prev) =>
+        prev.map((item, idx) => {
+          if (idx !== 0) return item;
+          if (result.liveUrl) {
+            return { ...item, status: "Live" };
+          }
+          return { ...item, status: "Building" };
+        }),
+      );
+    } catch {
+      setFailureMessage("Build pipeline could not be reached. Please retry.");
+      setAppState("failed");
+      setProjects((prev) => prev.map((item, idx) => (idx === 0 ? { ...item, status: "Failed" } : item)));
+    }
   }
 
-  const headline = config.headline || brief.productName;
-  const subheading = config.subheading || `Stop struggling with ${brief.problem.slice(0, 80)}.`;
-  const description = config.description || brief.solution;
-  const ctaText = config.cta_text || brief.cta;
-  const bullets = config.benefit_bullets || [
-    `Solve ${brief.problem.slice(0, 40)} instantly`,
-    "Built for speed and simplicity",
-    "Start seeing results from day one",
-  ];
-  const pricing = config.pricing_hint || "";
+  const output = analysis ? outputsFor(analysis) : null;
+  const activeLiveUrl = buildResult?.liveUrl || defaultLiveUrl;
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        margin: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "0",
-        background: "#f8fafc",
-        color: "#0f172a",
-        fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      }}
-    >
-      {/* Hero Section */}
-      <section
-        style={{
-          width: "100%",
-          maxWidth: "100%",
-          padding: "4rem 2rem 3rem",
-          textAlign: "center",
-          background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
-        }}
-      >
-        <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          <h1
-            style={{
-              margin: "0 0 1rem",
-              fontSize: "clamp(2rem, 5vw, 3rem)",
-              lineHeight: 1.1,
-              fontWeight: 800,
-              letterSpacing: "-0.02em",
-            }}
-          >
-            {headline}
-          </h1>
-          <p
-            style={{
-              margin: "0 0 2rem",
-              fontSize: "clamp(1.05rem, 2.5vw, 1.25rem)",
-              lineHeight: 1.5,
-              color: "#475569",
-              maxWidth: 560,
-              marginLeft: "auto",
-              marginRight: "auto",
-            }}
-          >
-            {subheading}
-          </p>
+    <main className="workspace-shell">
+      <div className="backdrop-glow" aria-hidden="true" />
 
-          <div style={{ maxWidth: 480, margin: "0 auto" }}>
-            <CtaForm cta={ctaText} />
+      <section className="hero-card">
+        <p className="eyebrow">AI-DAN Managing Director</p>
+        <h1>What do you want to build?</h1>
+        <p className="hero-subtext">Describe it. AI-DAN will analyze it, decide, and help you build it.</p>
+
+        <div className="mode-toggle" role="tablist" aria-label="Build mode">
+          <button
+            className={mode === "venture" ? "mode-btn active" : "mode-btn"}
+            onClick={() => setMode("venture")}
+            type="button"
+          >
+            Venture
+          </button>
+          <button
+            className={mode === "personal" ? "mode-btn active" : "mode-btn"}
+            onClick={() => setMode("personal")}
+            type="button"
+          >
+            Personal
+          </button>
+        </div>
+
+        <label className="input-label" htmlFor="idea-input">
+          Idea
+        </label>
+        <textarea
+          id="idea-input"
+          className="idea-input"
+          value={idea}
+          onChange={(event) => {
+            setIdea(event.target.value);
+            if (appState === "failed") {
+              setFailureMessage("");
+              setAppState("empty");
+            }
+          }}
+          placeholder="Example: A lightweight founder CRM that turns WhatsApp conversations into next actions and weekly launch priorities."
+        />
+
+        <button className="primary-cta" type="button" onClick={handleAnalyze} disabled={!canAnalyze || appState === "loading"}>
+          {appState === "loading" ? "Analyzing..." : "Analyze Idea"}
+        </button>
+
+        {appState === "failed" && failureMessage && (
+          <div className="state-note error">
+            <p>{failureMessage}</p>
+            <button type="button" className="text-action" onClick={handleAnalyze} disabled={!canAnalyze}>
+              Retry
+            </button>
           </div>
-        </div>
+        )}
       </section>
 
-      {/* Value Proposition */}
-      <section
-        style={{
-          width: "100%",
-          maxWidth: 760,
-          padding: "2.5rem 2rem",
-          margin: "0 auto",
-        }}
-      >
-        <div
-          style={{
-            background: "#ffffff",
-            border: "1px solid #e2e8f0",
-            borderRadius: 16,
-            padding: "2rem",
-            boxShadow: "0 4px 20px rgba(15, 23, 42, 0.04)",
-          }}
-        >
-          <p
-            style={{
-              margin: "0 0 1.5rem",
-              fontSize: "1.05rem",
-              lineHeight: 1.6,
-              color: "#334155",
-            }}
-          >
-            {description}
-          </p>
+      {analysis && (
+        <section className="glass-card decision-card">
+          <div className="decision-topline">
+            <p className="small-label">Decision</p>
+            <p className="idea-name">{analysis.ideaName}</p>
+          </div>
 
-          {/* Benefit Bullets */}
-          <ul
-            style={{
-              margin: 0,
-              padding: 0,
-              listStyle: "none",
-              display: "grid",
-              gap: "0.75rem",
-            }}
-          >
-            {bullets.map((bullet, i) => (
-              <li
-                key={i}
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: "0.6rem",
-                  fontSize: "1rem",
-                  color: "#334155",
-                  lineHeight: 1.5,
-                }}
-              >
-                <span
-                  style={{
-                    flexShrink: 0,
-                    width: 22,
-                    height: 22,
-                    borderRadius: "50%",
-                    background: "#10b981",
-                    color: "#ffffff",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: "0.75rem",
-                    fontWeight: 700,
-                    marginTop: "0.1rem",
-                  }}
-                >
-                  ✓
-                </span>
-                {bullet}
-              </li>
+          <h2 className={analysis.recommendation === "Build Now" ? "recommendation positive" : "recommendation neutral"}>
+            {analysis.recommendation}
+          </h2>
+          <p className="reason">{analysis.reason}</p>
+          <p className="insight">{analysis.founderInsight}</p>
+
+          <div className="meta-row">
+            <div>
+              <span className="meta-label">Confidence</span>
+              <strong>{analysis.confidence}</strong>
+            </div>
+            <div>
+              <span className="meta-label">Time to Launch</span>
+              <strong>{analysis.timeToLaunch}</strong>
+            </div>
+          </div>
+
+          <div className="signal-list" aria-label="Scoring signals">
+            {analysis.signals.map((signal) => (
+              <div key={signal.name} className="signal-row">
+                <div className="signal-label-row">
+                  <span>{signal.name}</span>
+                  <span>{signal.score}</span>
+                </div>
+                <div className="signal-track">
+                  <div className="signal-fill" style={{ width: `${clampScore(signal.score)}%` }} />
+                </div>
+              </div>
             ))}
-          </ul>
-        </div>
-      </section>
+          </div>
 
-      {/* Pricing / Social Proof */}
-      {pricing && (
-        <section
-          style={{
-            width: "100%",
-            maxWidth: 760,
-            padding: "0 2rem 2rem",
-            margin: "0 auto",
-            textAlign: "center",
-          }}
-        >
-          <div
-            style={{
-              background: "#0f172a",
-              color: "#f8fafc",
-              borderRadius: 16,
-              padding: "1.5rem 2rem",
-            }}
-          >
-            <p style={{ margin: 0, fontSize: "0.85rem", letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.7 }}>
-              Pricing
-            </p>
-            <p style={{ margin: "0.5rem 0 0", fontSize: "1.1rem", fontWeight: 600 }}>
-              {pricing}
-            </p>
+          <div className="action-row">
+            <button type="button" className="build-now-btn" onClick={handleBuildNow}>
+              Build Now
+            </button>
+            <button type="button" className="secondary-btn" onClick={handleAnalyze}>
+              Refine
+            </button>
+            <button type="button" className="secondary-btn" onClick={() => setProjects((prev) => prev)}>
+              Save
+            </button>
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => {
+                setAnalysis(null);
+                setBuildResult(null);
+                setBuildStepIndex(0);
+                setAppState("empty");
+              }}
+            >
+              Discard
+            </button>
           </div>
         </section>
       )}
 
-      {/* Bottom CTA */}
-      <section
-        style={{
-          width: "100%",
-          maxWidth: 720,
-          padding: "1rem 2rem 4rem",
-          margin: "0 auto",
-          textAlign: "center",
-        }}
-      >
-        <p
-          style={{
-            margin: "0 0 1.5rem",
-            fontSize: "1.25rem",
-            fontWeight: 700,
-          }}
-        >
-          Ready to get started?
-        </p>
-        <div style={{ maxWidth: 480, margin: "0 auto" }}>
-          <CtaForm cta={ctaText} />
-        </div>
+      {(appState === "building" || appState === "live" || buildResult) && (
+        <section className="glass-card">
+          <h3>Build Status</h3>
+
+          <ol className="build-steps">
+            {BUILD_STEPS.map((step, index) => {
+              const state =
+                appState === "live" || index < buildStepIndex
+                  ? "done"
+                  : index === buildStepIndex
+                    ? "active"
+                    : "pending";
+
+              return (
+                <li key={step} className={`step-item ${state}`}>
+                  <span className="step-dot" aria-hidden="true" />
+                  <span>{step}</span>
+                </li>
+              );
+            })}
+          </ol>
+
+          {appState === "live" && activeLiveUrl && (
+            <div className="live-panel">
+              <p>Live URL</p>
+              <a href={activeLiveUrl} target="_blank" rel="noreferrer">
+                {activeLiveUrl}
+              </a>
+              <div className="live-actions">
+                <a href={activeLiveUrl} target="_blank" rel="noreferrer" className="secondary-btn as-link">
+                  Open
+                </a>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(activeLiveUrl);
+                  }}
+                >
+                  Copy Link
+                </button>
+              </div>
+            </div>
+          )}
+
+          {appState === "failed" && buildResult?.buildBackendConnected === false && (
+            <div className="state-note warning">
+              <p>{buildResult.message}</p>
+            </div>
+          )}
+
+          {appState === "building" && buildResult?.buildBackendConnected && !buildResult.liveUrl && (
+            <div className="state-note warning">
+              <p>{buildResult.message || "Build is running. Live URL will appear after deployment callback is connected."}</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {output && (
+        <section className="glass-card">
+          <h3>{output.title}</h3>
+          <div className="outputs-grid">
+            {output.cards.map((card) => (
+              <article key={card.label} className="output-card">
+                <p className="small-label">{card.label}</p>
+                <p>{card.value}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="glass-card projects-card">
+        <h3>Projects</h3>
+        {projects.length === 0 ? (
+          <p className="muted">No projects yet.</p>
+        ) : (
+          <div className="projects-table" role="table" aria-label="Projects">
+            <div className="row head" role="row">
+              <span>Name</span>
+              <span>Type</span>
+              <span>Status</span>
+              <span>Recommendation / Score</span>
+              <span>Open / Manage</span>
+            </div>
+            {projects.map((project) => (
+              <div key={project.id} className="row" role="row">
+                <span>{project.name}</span>
+                <span>{project.mode === "venture" ? "Venture" : "Personal"}</span>
+                <span>{project.status}</span>
+                <span>{project.recommendation} / {project.score}</span>
+                <span>{activeLiveUrl ? <a href={activeLiveUrl}>Open</a> : "Manage"}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
-      {/* Footer */}
-      <footer
-        style={{
-          width: "100%",
-          padding: "1.5rem 2rem",
-          textAlign: "center",
-          borderTop: "1px solid #e2e8f0",
-          fontSize: "0.8rem",
-          color: "#94a3b8",
-          display: "flex",
-          justifyContent: "center",
-          gap: "1.5rem",
-          flexWrap: "wrap",
-        }}
-      >
-        <a href="/pricing" style={{ color: "#64748b", textDecoration: "none" }}>
-          Pricing
-        </a>
-        <span>Built with AI-DAN Factory</span>
-      </footer>
+      <section className="glass-card repo-card">
+        <h3>Repo / Deployment Awareness</h3>
+        <div className="repo-grid">
+          <div>
+            <span className="meta-label">Repo</span>
+            {repoUrl ? <a href={repoUrl}>{repoUrl}</a> : <p className="muted">Not linked</p>}
+          </div>
+          <div>
+            <span className="meta-label">Live</span>
+            {activeLiveUrl ? <a href={activeLiveUrl}>{activeLiveUrl}</a> : <p className="muted">Not live yet</p>}
+          </div>
+          <div>
+            <span className="meta-label">Health</span>
+            <p>{buildResult?.health || (activeLiveUrl ? "healthy" : "pending")}</p>
+          </div>
+          <div>
+            <span className="meta-label">Issue Flag</span>
+            <p>{appState === "failed" ? "Needs backend build connection" : "None"}</p>
+          </div>
+        </div>
+
+        {analysis && (
+          <p className="footnote">
+            Analysis source: {analysis.source === "brief_fields" ? "mapped from structured brief fields" : "derived from idea text"}.
+            Current score: {score}.
+          </p>
+        )}
+      </section>
     </main>
   );
 }
