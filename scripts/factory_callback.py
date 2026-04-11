@@ -6,6 +6,7 @@ This is the primary result-delivery mechanism matching the MD's FactoryCallbackP
   project_id, correlation_id, run_id, status, deploy_url, repo_url, error
 
 Authenticated via X-Factory-Secret header when FACTORY_SECRET is set.
+Also sends X-API-Key header when FACTORY_API_KEY is set (required by MD middleware).
 Falls back to the legacy /factory/webhook endpoint if callback_url is not provided.
 """
 
@@ -21,6 +22,8 @@ import urllib.request
 
 from factory_utils import log_event, maybe_write_result, redact_secrets, validate_webhook_url
 
+DLQ_FILE = os.environ.get("FACTORY_CALLBACK_DLQ_FILE", "/tmp/factory_callback_dlq.json")
+
 STEP_NAME = "factory_callback"
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 _MAX_RETRIES = 4
@@ -32,6 +35,7 @@ def _post_callback(
     callback_url: str,
     payload: dict,
     factory_secret: str = "",
+    api_key: str = "",
     timeout: int = 30,
 ) -> dict | None:
     """POST the result payload to the MD callback endpoint with auth.
@@ -45,8 +49,11 @@ def _post_callback(
     for attempt in range(_MAX_RETRIES):
         req = urllib.request.Request(url=callback_url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "ai-dan-factory/1.0")
         if factory_secret:
             req.add_header("X-Factory-Secret", factory_secret)
+        if api_key:
+            req.add_header("X-API-Key", api_key)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 resp_body = resp.read().decode("utf-8", errors="replace")
@@ -99,6 +106,30 @@ def _post_callback(
         raise last_exc
 
 
+def _append_to_dlq(payload: dict, callback_url: str) -> None:
+    import fcntl
+
+    entry = {"callback_url": callback_url, "payload": payload, "retries": 0}
+    dlq_path = DLQ_FILE
+    try:
+        existing: list = []
+        try:
+            with open(dlq_path, "r", encoding="utf-8") as fh:
+                fcntl.flock(fh, fcntl.LOCK_SH)
+                existing = json.load(fh)
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        existing.append(entry)
+        with open(dlq_path, "w", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            json.dump(existing, fh, indent=2, ensure_ascii=True)
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        print(f"[{STEP_NAME}] Payload appended to DLQ: {dlq_path}", file=sys.stderr, flush=True)
+    except Exception as dlq_exc:
+        print(f"[{STEP_NAME}] DLQ write failed: {dlq_exc}", file=sys.stderr, flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="POST factory build result to Managing Director callback endpoint"
@@ -119,6 +150,7 @@ def main() -> int:
     callback_url = args.callback_url.strip()
     correlation_id = args.correlation_id.strip()
     factory_secret = os.environ.get("FACTORY_SECRET", "").strip()
+    factory_api_key = os.environ.get("FACTORY_API_KEY", "").strip()
     project_id = args.project_id.strip()
 
     # Build payload matching FactoryCallbackPayload on the MD side
@@ -129,6 +161,7 @@ def main() -> int:
         "status": args.status,
         "deploy_url": args.deploy_url.strip(),
         "repo_url": args.repo_url.strip(),
+        "contract_version": "1.0",
     }
     if args.error_summary.strip():
         payload["error"] = args.error_summary.strip()
@@ -156,7 +189,7 @@ def main() -> int:
         return 1
 
     try:
-        ack = _post_callback(callback_url=callback_url, payload=payload, factory_secret=factory_secret)
+        ack = _post_callback(callback_url=callback_url, payload=payload, factory_secret=factory_secret, api_key=factory_api_key)
         ack_status = ack.get("status", "") if ack else ""
         log_event(project_id=project_id, step=STEP_NAME, status="success", mode="production", md_ack_status=ack_status)
         result = {"project_id": project_id, "step": STEP_NAME, "status": "success", "mode": "production"}
@@ -168,6 +201,7 @@ def main() -> int:
         log_event(project_id=project_id, step=STEP_NAME, status="failed", error=error_msg)
         maybe_write_result(args.result_file, {"project_id": project_id, "step": STEP_NAME, "status": "failed", "error": error_msg})
         print(f"[{STEP_NAME}] Callback failed after retries: {error_msg}", file=sys.stderr, flush=True)
+        _append_to_dlq(payload, callback_url)
         # Exit non-zero so the workflow step fails visibly and can trigger
         # the alert step — never silently swallow delivery failures.
         return 1

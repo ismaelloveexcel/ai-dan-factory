@@ -7,6 +7,7 @@ This module is the single source of truth for:
   - required and optional BuildBrief v1 fields
   - FactoryRunResult v1 canonical output keys
   - monitoring signal allowed values
+  - failure taxonomy (ErrorCode) and runbook URLs
 
 Import from here in factory_orchestrator, run_factory_tests, or any
 finalization logic instead of duplicating definitions.
@@ -23,6 +24,32 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 CONTRACT_VERSION = "v1"
+CALLBACK_CONTRACT_VERSION = "1.0"
+
+
+class ErrorCode:
+    AUTH_FAIL = "AUTH_FAIL"
+    CALLBACK_TIMEOUT = "CALLBACK_TIMEOUT"
+    DISPATCH_REJECTED = "DISPATCH_REJECTED"
+    CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
+    SCHEMA_INVALID = "SCHEMA_INVALID"
+    STUB_IN_PRODUCTION = "STUB_IN_PRODUCTION"
+    SSRF_BLOCKED = "SSRF_BLOCKED"
+    RATE_LIMIT = "RATE_LIMIT"
+
+
+RUNBOOK_BASE_URL = "https://github.com/ismaelloveexcel/ai-dan-factory/blob/main/OPERATOR_GUIDE.md"
+
+ERROR_RUNBOOK = {
+    ErrorCode.AUTH_FAIL: f"{RUNBOOK_BASE_URL}#auth-fail",
+    ErrorCode.CALLBACK_TIMEOUT: f"{RUNBOOK_BASE_URL}#callback-timeout",
+    ErrorCode.DISPATCH_REJECTED: f"{RUNBOOK_BASE_URL}#dispatch-rejected",
+    ErrorCode.CONTRACT_MISMATCH: f"{RUNBOOK_BASE_URL}#contract-mismatch",
+    ErrorCode.SCHEMA_INVALID: f"{RUNBOOK_BASE_URL}#schema-invalid",
+    ErrorCode.STUB_IN_PRODUCTION: f"{RUNBOOK_BASE_URL}#stub-in-production",
+    ErrorCode.SSRF_BLOCKED: f"{RUNBOOK_BASE_URL}#ssrf-blocked",
+    ErrorCode.RATE_LIMIT: f"{RUNBOOK_BASE_URL}#rate-limit",
+}
 
 # ---------------------------------------------------------------------------
 # BuildBrief v1
