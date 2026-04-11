@@ -19,8 +19,8 @@ def _check_env(name: str) -> tuple[bool, str]:
     """Check if an env var is set and non-empty."""
     val = os.environ.get(name, "").strip()
     if val:
-        return True, f"  ✓ {name} = {'*' * min(len(val), 8)}..."
-    return False, f"  ✗ {name} = (not set)"
+        return True, f"  \u2713 {name} = {'*' * min(len(val), 8)}..."
+    return False, f"  \u2717 {name} = (not set)"
 
 
 def validate(mode: str = "production") -> list[str]:
@@ -37,6 +37,33 @@ def validate(mode: str = "production") -> list[str]:
             print(msg, flush=True)
             if not ok:
                 errors.append(f"Missing required secret: {var}")
+
+    # --- Callback/auth secrets: required when STRICT_PROD=true ---
+    strict_prod = os.environ.get("STRICT_PROD", "").strip().lower() == "true"
+    for var in ("FACTORY_CALLBACK_SECRET", "FACTORY_SECRET"):
+        ok, msg = _check_env(var)
+        print(msg, flush=True)
+        if not ok:
+            if strict_prod:
+                errors.append(f"Missing required secret (STRICT_PROD=true): {var}")
+            else:
+                warnings.append(f"Optional: {var} not set (callback authentication disabled)")
+
+    # GH_TOKEN or GITHUB_TOKEN must be present (for GitHub API calls)
+    gh_ok = (
+        bool(os.environ.get("GH_TOKEN", "").strip())
+        or bool(os.environ.get("GITHUB_TOKEN", "").strip())
+        or bool(os.environ.get("FACTORY_GITHUB_TOKEN", "").strip())
+    )
+    if gh_ok:
+        print("  \u2713 GH_TOKEN / GITHUB_TOKEN = set", flush=True)
+    else:
+        if strict_prod:
+            errors.append("Missing required secret (STRICT_PROD=true): GH_TOKEN or GITHUB_TOKEN")
+            print("  \u2717 GH_TOKEN / GITHUB_TOKEN = (not set)", flush=True)
+        else:
+            warnings.append("Optional: GH_TOKEN / GITHUB_TOKEN not set (GitHub API calls may fail)")
+            print("  \u26a0 GH_TOKEN / GITHUB_TOKEN = (not set)", flush=True)
 
     # --- Recommended ---
     for var in ("OPENAI_API_KEY",):
@@ -62,13 +89,13 @@ def validate(mode: str = "production") -> list[str]:
     # --- Template directory ---
     template_dir = os.environ.get("TEMPLATE_PROJECT_DIR", "templates/saas-template")
     if Path(template_dir).is_dir():
-        print(f"  ✓ TEMPLATE_PROJECT_DIR = {template_dir} (exists)", flush=True)
+        print(f"  \u2713 TEMPLATE_PROJECT_DIR = {template_dir} (exists)", flush=True)
     else:
-        print(f"  ⚠ TEMPLATE_PROJECT_DIR = {template_dir} (not found locally, OK for GitHub Actions)", flush=True)
+        print(f"  \u26a0 TEMPLATE_PROJECT_DIR = {template_dir} (not found locally, OK for GitHub Actions)", flush=True)
 
     # --- Print warnings ---
     for w in warnings:
-        print(f"  ⚠ {w}", flush=True)
+        print(f"  \u26a0 {w}", flush=True)
 
     return errors
 
@@ -80,12 +107,12 @@ def main() -> int:
 
     errors = validate(args.mode)
     if errors:
-        print(f"\n[env_check] FAILED — {len(errors)} error(s):", file=sys.stderr, flush=True)
+        print(f"\n[env_check] FAILED \u2014 {len(errors)} error(s):", file=sys.stderr, flush=True)
         for e in errors:
-            print(f"  ✗ {e}", file=sys.stderr, flush=True)
+            print(f"  \u2717 {e}", file=sys.stderr, flush=True)
         return 1
 
-    print("\n[env_check] PASSED — environment is valid.", flush=True)
+    print("\n[env_check] PASSED \u2014 environment is valid.", flush=True)
     return 0
 
 

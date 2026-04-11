@@ -111,14 +111,14 @@ jobs:
           p = os.path.join(os.environ["RESULT_DIR"], "business_gate.json")
           try:
               data = json.loads(open(p).read())
-              print(data.get("gate_decision", "reject"))
+              print(data.get("decision", "REJECT"))
           except Exception:
-              print("reject")
+              print("REJECT")
           PY
             )"
             echo "GATE_DECISION=$GATE_STATUS" >> "$GITHUB_ENV"
 
-            if [ "$GATE_STATUS" = "approve" ]; then
+            if [ "$GATE_STATUS" = "APPROVE" ]; then
               echo "[autonomous] Idea approved in live_mode — dispatching factory-build workflow"
               BRIEF_JSON="$(cat "$SELECTED_BRIEF")"
               gh workflow run factory-build.yml \

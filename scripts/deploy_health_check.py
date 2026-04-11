@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 
-from factory_utils import log_event, maybe_write_result
+from factory_utils import log_event, maybe_write_result, validate_webhook_url
 
 STEP_NAME = "deploy_health_check"
 
@@ -21,6 +21,7 @@ class HealthCheckError(Exception):
 
 
 def check_url(url: str, timeout_seconds: int) -> tuple[int, str]:
+    validate_webhook_url(url)
     request = urllib.request.Request(url=url, method="GET")
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         status_code = response.status
@@ -99,6 +100,31 @@ def main() -> None:
             error=error_message,
         )
         raise SystemExit(1)
+
+    try:
+        validate_webhook_url(deployment_url)
+    except ValueError as exc:
+        error_message = f"SSRF protection blocked deployment URL: {exc}"
+        payload = {
+            "project_id": project_id,
+            "step": STEP_NAME,
+            "status": "failed",
+            "mode": mode,
+            "idempotency_key": idempotency_key,
+            "health_status": "failed",
+            "failure_reason": "ssrf_blocked",
+            "error_summary": error_message,
+        }
+        maybe_write_result(args.result_file, payload)
+        log_event(
+            project_id=project_id,
+            step=STEP_NAME,
+            status="failed",
+            mode=mode,
+            idempotency_key=idempotency_key,
+            error=error_message,
+        )
+        raise SystemExit(2)
 
     last_error = ""
     for attempt in range(1, max(1, args.attempts) + 1):

@@ -1,0 +1,214 @@
+name: readiness-gate
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  readiness:
+    name: Readiness Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 1) Secret presence check
+        id: secrets_check
+        env:
+          FACTORY_CALLBACK_SECRET: ${{ secrets.FACTORY_CALLBACK_SECRET }}
+          FACTORY_SECRET: ${{ secrets.FACTORY_SECRET }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.FACTORY_GITHUB_TOKEN }}
+          FACTORY_MD_URL: ${{ secrets.FACTORY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          PASS=true
+          check_secret() {
+            local name="$1"
+            local value="$2"
+            if [ -n "$value" ]; then
+              echo "  \u2705 $name is set"
+            else
+              echo "  \u274c $name is NOT set"
+              PASS=false
+            fi
+          }
+          check_secret "FACTORY_CALLBACK_SECRET" "${FACTORY_CALLBACK_SECRET:-}"
+          check_secret "GH_TOKEN / FACTORY_GITHUB_TOKEN" "${GH_TOKEN:-}"
+          check_secret "FACTORY_MD_URL (FACTORY_BASE_URL)" "${FACTORY_MD_URL:-}"
+          if [ "$PASS" = "false" ]; then
+            echo "SECRETS_OK=false" >> "$GITHUB_ENV"
+          else
+            echo "SECRETS_OK=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: 2) Environment check
+        id: env_check
+        run: |
+          set -euo pipefail
+          echo "Python version: $(python --version)"
+          echo "Checking required scripts..."
+          PASS=true
+          for script in scripts/factory_callback.py scripts/validate_env.py scripts/factory_run_contract.py scripts/run_factory_tests.py scripts/factory_callback_dlq.py; do
+            if [ -f "$script" ]; then
+              echo "  \u2705 $script"
+            else
+              echo "  \u274c $script MISSING"
+              PASS=false
+            fi
+          done
+          if [ "$PASS" = "false" ]; then
+            echo "ENV_OK=false" >> "$GITHUB_ENV"
+          else
+            echo "ENV_OK=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: 3) Schema contract check
+        id: contract_check
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "scripts")
+          import factory_run_contract
+          assert hasattr(factory_run_contract, "CONTRACT_VERSION"), "Missing CONTRACT_VERSION"
+          assert hasattr(factory_run_contract, "CALLBACK_CONTRACT_VERSION"), "Missing CALLBACK_CONTRACT_VERSION"
+          assert hasattr(factory_run_contract, "ErrorCode"), "Missing ErrorCode"
+          assert hasattr(factory_run_contract, "ERROR_RUNBOOK"), "Missing ERROR_RUNBOOK"
+          print("Contract OK \u2014 version:", factory_run_contract.CONTRACT_VERSION)
+          print("Callback contract version:", factory_run_contract.CALLBACK_CONTRACT_VERSION)
+          PY
+          echo "CONTRACT_OK=true" >> "$GITHUB_ENV"
+
+      - name: 4) Factory scripts smoke test
+        id: smoke_test
+        run: |
+          set -euo pipefail
+          python scripts/run_factory_tests.py
+          echo "SMOKE_OK=true" >> "$GITHUB_ENV"
+
+      - name: 5) Callback handshake test (mock server)
+        id: handshake_test
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import threading
+          import time
+          import urllib.request
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          sys.path.insert(0, "scripts")
+
+          received = {}
+          received_event = threading.Event()
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, fmt, *args):
+                  pass
+
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", 0))
+                  body = self.rfile.read(length)
+                  received["headers"] = dict(self.headers)
+                  try:
+                      received["payload"] = json.loads(body)
+                  except Exception:
+                      received["payload"] = {}
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.end_headers()
+                  self.wfile.write(b'{"status": "ok"}')
+                  received_event.set()
+
+          server = HTTPServer(("127.0.0.1", 18765), Handler)
+          thread = threading.Thread(target=server.handle_request, daemon=True)
+          thread.start()
+
+          os.environ["FACTORY_SECRET"] = "test-secret-123"
+          os.environ["FACTORY_API_KEY"] = "test-api-key-456"
+
+          import factory_utils
+          factory_utils.validate_webhook_url = lambda url: None
+
+          import importlib
+          import factory_callback as fcb
+          importlib.reload(fcb)
+
+          payload = {
+              "project_id": "readiness-test",
+              "correlation_id": "readiness-gate-run",
+              "run_id": "0",
+              "status": "succeeded",
+              "deploy_url": "",
+              "repo_url": "",
+              "contract_version": "1.0",
+          }
+          try:
+              fcb._post_callback(
+                  callback_url="http://127.0.0.1:18765/factory/callback",
+                  payload=payload,
+                  factory_secret="test-secret-123",
+                  api_key="test-api-key-456",
+              )
+          except Exception as exc:
+              print(f"Note: _post_callback raised (may be expected for http://): {exc}")
+
+          received_event.wait(timeout=5)
+          server.server_close()
+
+          assert received, "No request received by mock server!"
+          hdrs = {k.lower(): v for k, v in received["headers"].items()}
+          assert hdrs.get("x-factory-secret") == "test-secret-123", f"Bad X-Factory-Secret: {hdrs}"
+          assert hdrs.get("x-api-key") == "test-api-key-456", f"Bad X-API-Key: {hdrs}"
+          payload_back = received.get("payload", {})
+          assert payload_back.get("contract_version") == "1.0", f"Bad contract_version: {payload_back}"
+          print("\u2705 Handshake test PASSED")
+          print("  contract_version:", payload_back.get("contract_version"))
+          PY
+          echo "HANDSHAKE_OK=true" >> "$GITHUB_ENV"
+
+      - name: 6) Summary report
+        if: always()
+        run: |
+          echo ""
+          echo "============================================================"
+          echo "  Readiness Gate \u2014 Summary"
+          echo "============================================================"
+          show_check() {
+            local name="$1"
+            local val="${2:-false}"
+            if [ "$val" = "true" ]; then
+              echo "  \u2705 $name"
+            else
+              echo "  \u274c $name"
+            fi
+          }
+          show_check "1) Secret presence"       "${SECRETS_OK:-false}"
+          show_check "2) Environment check"     "${ENV_OK:-false}"
+          show_check "3) Schema contract"       "${CONTRACT_OK:-false}"
+          show_check "4) Factory smoke test"    "${SMOKE_OK:-false}"
+          show_check "5) Callback handshake"    "${HANDSHAKE_OK:-false}"
+          echo "============================================================"
+
+          ALL_PASS=true
+          for val in "${SECRETS_OK:-false}" "${ENV_OK:-false}" "${CONTRACT_OK:-false}" "${SMOKE_OK:-false}" "${HANDSHAKE_OK:-false}"; do
+            if [ "$val" != "true" ]; then
+              ALL_PASS=false
+            fi
+          done
+          if [ "$ALL_PASS" = "true" ]; then
+            echo "  \U0001f389 All checks PASSED \u2014 system is ready."
+          else
+            echo "  \u26a0\ufe0f  Some checks FAILED \u2014 review output above."
+            exit 1
+          fi
