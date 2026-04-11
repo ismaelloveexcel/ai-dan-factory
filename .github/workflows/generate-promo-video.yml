@@ -1,0 +1,105 @@
+name: Generate Promo Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'Product/Project name'
+        required: true
+        default: 'My Product'
+      tagline:
+        description: 'Short tagline'
+        required: false
+        default: ''
+      product_url:
+        description: 'Product URL'
+        required: false
+        default: 'https://example.com'
+      region:
+        description: 'Target region (global/mena/africa/south_asia/etc)'
+        required: false
+        default: 'global'
+      use_ai_concept:
+        description: 'Use AI to generate video script (true/false)'
+        required: false
+        default: 'true'
+
+jobs:
+  generate-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+
+      - name: Install Python dependencies
+        run: |
+          pip install moviepy==1.0.3 httpx
+
+      - name: Create artifacts directory
+        run: mkdir -p artifacts
+
+      - name: Generate AI video concept
+        if: ${{ inputs.use_ai_concept == 'true' }}
+        env:
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/generate_video_concept.py \
+            --product "${{ inputs.project_name }}" \
+            --tagline "${{ inputs.tagline }}" \
+            --url "${{ inputs.product_url }}" \
+            --region "${{ inputs.region }}" \
+            --output artifacts/video_concept.json
+
+      - name: Generate template concept (no AI)
+        if: ${{ inputs.use_ai_concept != 'true' }}
+        run: |
+          python scripts/generate_video_concept.py \
+            --product "${{ inputs.project_name }}" \
+            --tagline "${{ inputs.tagline }}" \
+            --url "${{ inputs.product_url }}" \
+            --region "${{ inputs.region }}" \
+            --output artifacts/video_concept.json
+
+      - name: Render promo video
+        run: |
+          python scripts/generate_promo_video.py \
+            --brief artifacts/video_concept.json \
+            --output artifacts/promo_video.mp4
+
+      - name: Upload video artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: promo-video-${{ inputs.project_name }}-${{ inputs.region }}
+          path: |
+            artifacts/promo_video.mp4
+            artifacts/video_concept.json
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          echo "## ✅ Promo Video Generated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Product:** ${{ inputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ inputs.region }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the **promo-video-*** artifact above to get your MP4!" >> $GITHUB_STEP_SUMMARY
+          if [ -f artifacts/video_concept.json ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Video Concept" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat artifacts/video_concept.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
