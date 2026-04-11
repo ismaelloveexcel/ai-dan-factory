@@ -98,6 +98,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: 2b) Validate environment
+        env:
+          FACTORY_CALLBACK_SECRET: ${{ secrets.FACTORY_CALLBACK_SECRET }}
+          FACTORY_SECRET: ${{ secrets.FACTORY_SECRET }}
+          FACTORY_GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          STRICT_PROD: ${{ vars.STRICT_PROD }}
+        run: |
+          set -euo pipefail
+          python scripts/validate_env.py --mode "${{ inputs.dry_run == 'true' && 'dry_run' || inputs.run_automated_tests_only == 'true' && 'tests_only' || 'production' }}"
+
       - name: 3) Initialize run context
         env:
           BUILD_BRIEF_JSON: ${{ inputs.build_brief_json }}
@@ -373,13 +383,14 @@ jobs:
             NOTIFY_ARGS+=(--dry-run)
           fi
 
-          python scripts/notify_director.py "${NOTIFY_ARGS[@]}" || true
+          python scripts/notify_director.py "${NOTIFY_ARGS[@]}"
 
       - name: 8b) Callback to Managing Director
         if: always() && env.CALLBACK_URL != ''
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           FACTORY_SECRET: ${{ secrets.FACTORY_SECRET }}
+          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
           CORRELATION_ID: ${{ env.CORRELATION_ID }}
           RUN_ID: ${{ env.RUN_ID }}
           RESULT_DIR: ${{ env.RESULT_DIR }}
@@ -431,7 +442,7 @@ jobs:
             CALLBACK_ARGS+=(--dry-run)
           fi
 
-          python scripts/factory_callback.py "${CALLBACK_ARGS[@]}" || true
+          python scripts/factory_callback.py "${CALLBACK_ARGS[@]}"
 
       - name: 8c) Generate launch assets
         if: env.RUN_MODE != 'tests_only'
