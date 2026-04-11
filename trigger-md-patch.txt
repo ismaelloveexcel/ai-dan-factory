@@ -1,2 +1,1 @@
-# This file triggers the patch-md-frontend workflow
-# Pushed by AI-DAN Factory automation
+# Trigger file for patch-md-frontend workflow (updated)
