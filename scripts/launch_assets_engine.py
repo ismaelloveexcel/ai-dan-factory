@@ -12,7 +12,8 @@ Outputs:
   - LAUNCH_ASSETS.md  (human-readable, written to the output directory)
   - <result-file>.json (machine-readable for callbacks and the Managing Director)
 
-Falls back to deterministic templates when OPENAI_API_KEY is not set,
+Provider priority: Groq → OpenAI → Anthropic → deterministic fallback.
+Falls back to deterministic templates only when no AI API key is available,
 marking quality_level as "reduced".  The operator gets usable copy either way.
 """
 
@@ -29,6 +30,13 @@ from typing import Any
 from factory_utils import log_event, maybe_write_result
 
 STEP_NAME = "launch_assets"
+
+_SYSTEM_PROMPT = (
+    "You are a direct-response copywriter who writes launch posts and cold emails "
+    "for solo founders. Write clear, specific, conversational copy. "
+    "No corporate speak. No fluff. No emojis unless explicitly requested. "
+    "Output valid JSON only, with no markdown fencing."
+)
 
 
 class LaunchAssetsError(Exception):
@@ -51,22 +59,21 @@ def _optional_str(brief: dict[str, Any], key: str, default: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI
+# Multi-provider LLM caller
 # ---------------------------------------------------------------------------
 
-def _call_openai(prompt: str, api_key: str, max_tokens: int = 900) -> str:
+def _call_openai_compat(
+    prompt: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    max_tokens: int = 900,
+) -> str:
+    """Call any OpenAI-compatible chat completions endpoint."""
     body = json.dumps({
-        "model": "gpt-3.5-turbo",
+        "model": model,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a direct-response copywriter who writes launch posts and cold emails "
-                    "for solo founders. Write clear, specific, conversational copy. "
-                    "No corporate speak. No fluff. No emojis unless explicitly requested. "
-                    "Output valid JSON only, with no markdown fencing."
-                ),
-            },
+            {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.75,
@@ -74,7 +81,7 @@ def _call_openai(prompt: str, api_key: str, max_tokens: int = 900) -> str:
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
+        f"{base_url}/chat/completions",
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -82,13 +89,65 @@ def _call_openai(prompt: str, api_key: str, max_tokens: int = 900) -> str:
         },
         method="POST",
     )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+        return str(result["choices"][0]["message"]["content"]).strip()
 
-    try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            return str(result["choices"][0]["message"]["content"]).strip()
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError) as exc:
-        raise LaunchAssetsError(f"OpenAI API call failed: {exc}") from exc
+
+def _call_anthropic(prompt: str, api_key: str, max_tokens: int = 900) -> str:
+    """Call Anthropic Messages API."""
+    body = json.dumps({
+        "model": "claude-3-haiku-20240307",
+        "max_tokens": max_tokens,
+        "system": _SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+        return str(result["content"][0]["text"]).strip()
+
+
+def _call_llm(prompt: str, max_tokens: int = 900) -> tuple[str, str]:
+    """
+    Try AI providers in priority order: Groq → OpenAI → Anthropic.
+
+    Returns (response_text, provider_name).
+    Raises LaunchAssetsError if all providers fail.
+    """
+    providers: list[tuple[str, str, Any]] = [
+        ("groq", os.environ.get("GROQ_API_KEY", "").strip(),
+         lambda key: _call_openai_compat(
+             prompt, key, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", max_tokens)),
+        ("openai", os.environ.get("OPENAI_API_KEY", "").strip(),
+         lambda key: _call_openai_compat(
+             prompt, key, "https://api.openai.com/v1", "gpt-3.5-turbo", max_tokens)),
+        ("anthropic", os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+         lambda key: _call_anthropic(prompt, key, max_tokens)),
+    ]
+
+    errors: list[str] = []
+    for name, api_key, caller in providers:
+        if not api_key:
+            continue
+        try:
+            return caller(api_key), name
+        except (urllib.error.URLError, KeyError, json.JSONDecodeError, Exception) as exc:
+            errors.append(f"{name}: {exc}")
+
+    raise LaunchAssetsError(
+        f"All AI providers failed: {'; '.join(errors) or 'no API keys configured'}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +194,7 @@ Write launch copy for a solo founder's first launch. Return JSON with exactly th
 # ---------------------------------------------------------------------------
 
 def _fallback_assets(brief: dict[str, Any], deployment_url: str) -> dict[str, Any]:
-    """Deterministic copy when OpenAI is unavailable. Usable, not perfect."""
+    """Deterministic copy when all AI providers are unavailable. Usable, not perfect."""
     product_name = _optional_str(brief, "product_name", "this product")
     problem = _optional_str(brief, "problem", "a real problem")
     solution = _optional_str(brief, "solution", "a better way")
@@ -208,7 +267,7 @@ def _build_launch_assets_md(
     quality_note = (
         ""
         if quality_level == "ai"
-        else "\n> ⚠️ AI copy generation was skipped (OPENAI_API_KEY not set). "
+        else "\n> ⚠️ AI copy generation was skipped (no GROQ_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY found). "
              "These are deterministic templates — edit before posting.\n"
     )
 
@@ -280,30 +339,41 @@ def generate_launch_assets(
     Generate launch assets from a build brief and deployment URL.
 
     Returns (assets_dict, quality_level) where quality_level is "ai" or "reduced".
+    Provider priority: Groq → OpenAI → Anthropic → deterministic fallback.
     """
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    has_any_key = any([
+        os.environ.get("GROQ_API_KEY", "").strip(),
+        os.environ.get("OPENAI_API_KEY", "").strip(),
+        os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+    ])
 
-    if mode == "dry_run" or not api_key:
+    if mode == "dry_run" or not has_any_key:
         quality_level = "reduced"
         assets = _fallback_assets(brief, deployment_url)
-        if mode != "dry_run" and not api_key:
+        if mode != "dry_run" and not has_any_key:
             log_event(
                 project_id=project_id,
                 step=STEP_NAME,
                 status="info",
                 mode=mode,
-                note="OPENAI_API_KEY not set — using deterministic fallback copy.",
+                note="No AI API keys set (checked GROQ_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) — using deterministic fallback.",
             )
     else:
         try:
             prompt = _build_launch_prompt(brief, deployment_url)
-            raw = _call_openai(prompt, api_key)
+            raw, provider_name = _call_llm(prompt)
             parsed = json.loads(raw)
-            # Merge with fallback to fill any missing keys
             fallback = _fallback_assets(brief, deployment_url)
             assets = {key: str(parsed.get(key, fallback[key])).strip() or fallback[key]
                       for key in fallback}
             quality_level = "ai"
+            log_event(
+                project_id=project_id,
+                step=STEP_NAME,
+                status="info",
+                mode=mode,
+                note=f"AI copy generated via {provider_name}.",
+            )
         except (LaunchAssetsError, json.JSONDecodeError, KeyError) as exc:
             log_event(
                 project_id=project_id,
@@ -353,7 +423,6 @@ def main() -> None:
             mode=mode,
         )
 
-        # Write LAUNCH_ASSETS.md
         md_content = _build_launch_assets_md(assets, deployment_url, product_name, quality_level)
         output_dir = Path(args.output_dir) if args.output_dir else None
         if output_dir:
