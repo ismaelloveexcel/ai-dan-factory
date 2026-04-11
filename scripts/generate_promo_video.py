@@ -3,10 +3,9 @@
 generate_promo_video.py - Free MP4 promo video renderer using MoviePy.
 
 Reads a JSON concept file and renders a short animated MP4 with:
-- Gradient background with color animation
+- Gradient background
 - Text scenes with fade transitions
-- Dodo mascot watermark (text-based)
-- Branded accent color border
+- Branded accent color
 """
 import argparse
 import json
@@ -20,47 +19,63 @@ try:
         TextClip,
         concatenate_videoclips,
     )
-    import numpy as np
 except ImportError:
     print("MoviePy not installed. Run: pip install moviepy==1.0.3", file=sys.stderr)
     sys.exit(1)
 
 
-def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+def hex_to_rgb(hex_color: str) -> tuple:
     h = hex_color.lstrip("#")
     return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
 
 
-def make_scene(text: str, sub: str, duration: float, bg_rgb: tuple, accent_rgb: tuple, size=(1080, 1080)) -> CompositeVideoClip:
+def make_scene(
+    text: str,
+    sub: str,
+    duration: float,
+    bg_rgb: tuple,
+    accent_rgb: tuple,
+    size: tuple = (720, 720),
+) -> CompositeVideoClip:
     bg = ColorClip(size=size, color=bg_rgb, duration=duration)
     clips = [bg]
 
     if text:
         try:
-            main_text = TextClip(
-                text,
-                fontsize=80,
-                color="white",
-                font="DejaVu-Sans-Bold",
-                method="caption",
-                size=(size[0] - 120, None),
-                align="center",
-            ).set_duration(duration).set_position("center").crossfadein(0.4)
+            main_text = (
+                TextClip(
+                    text,
+                    fontsize=60,
+                    color="white",
+                    font="DejaVu-Sans-Bold",
+                    method="caption",
+                    size=(size[0] - 80, None),
+                    align="center",
+                )
+                .set_duration(duration)
+                .set_position("center")
+                .crossfadein(0.4)
+            )
             clips.append(main_text)
         except Exception as e:
             print(f"  TextClip warning: {e}", file=sys.stderr)
 
     if sub:
         try:
-            sub_text = TextClip(
-                sub,
-                fontsize=44,
-                color=f"rgb({accent_rgb[0]},{accent_rgb[1]},{accent_rgb[2]})",
-                font="DejaVu-Sans",
-                method="caption",
-                size=(size[0] - 160, None),
-                align="center",
-            ).set_duration(duration).set_position(("center", size[1] * 0.7)).crossfadein(0.5)
+            sub_text = (
+                TextClip(
+                    sub,
+                    fontsize=34,
+                    color=f"rgb({accent_rgb[0]},{accent_rgb[1]},{accent_rgb[2]})",
+                    font="DejaVu-Sans",
+                    method="caption",
+                    size=(size[0] - 120, None),
+                    align="center",
+                )
+                .set_duration(duration)
+                .set_position(("center", int(size[1] * 0.72)))
+                .crossfadein(0.5)
+            )
             clips.append(sub_text)
         except Exception as e:
             print(f"  SubText warning: {e}", file=sys.stderr)
@@ -93,18 +108,10 @@ def main() -> None:
     print(f"Rendering video for: {product}")
 
     scenes = []
-
-    # Scene 1: Hook (3s)
     scenes.append(make_scene(hook, "AI-DAN Factory", 3.0, bg_rgb, accent_rgb))
-
-    # Scene 2: Problem (3s)
     if problem:
         scenes.append(make_scene(problem, "", 3.0, bg_rgb, accent_rgb))
-
-    # Scene 3: Solution (4s)
     scenes.append(make_scene(solution or tagline, product, 4.0, bg_rgb, accent_rgb))
-
-    # Scene 4: CTA (3s)
     scenes.append(make_scene(cta, url or hashtags, 3.0, accent_rgb, bg_rgb))
 
     video = concatenate_videoclips(scenes, method="compose")

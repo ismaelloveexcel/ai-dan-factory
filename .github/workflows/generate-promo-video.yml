@@ -50,21 +50,10 @@ jobs:
       - name: Create artifacts directory
         run: mkdir -p artifacts
 
-      - name: Generate AI video concept
-        if: ${{ inputs.use_ai_concept == 'true' }}
+      - name: Generate video concept
         env:
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python scripts/generate_video_concept.py \
-            --product "${{ inputs.project_name }}" \
-            --tagline "${{ inputs.tagline }}" \
-            --url "${{ inputs.product_url }}" \
-            --region "${{ inputs.region }}" \
-            --output artifacts/video_concept.json
-
-      - name: Generate template concept (no AI)
-        if: ${{ inputs.use_ai_concept != 'true' }}
         run: |
           python scripts/generate_video_concept.py \
             --product "${{ inputs.project_name }}" \
@@ -99,7 +88,7 @@ jobs:
           if [ -f artifacts/video_concept.json ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Video Concept" >> $GITHUB_STEP_SUMMARY
-            echo '```json' >> $GITHUB_STEP_SUMMARY
+            echo '\`\`\`json' >> $GITHUB_STEP_SUMMARY
             cat artifacts/video_concept.json >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo '\`\`\`' >> $GITHUB_STEP_SUMMARY
           fi
