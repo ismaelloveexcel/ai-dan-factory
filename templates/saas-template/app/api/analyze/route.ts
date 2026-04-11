@@ -21,6 +21,14 @@ type AnalysisResponse = {
   timeToLaunch: string;
   signals: DecisionSignal[];
   source: "brief_fields" | "idea_text";
+  offer: {
+    title: string;
+    price: string;
+    model: string;
+    promise: string;
+    cta: string;
+  };
+  nextAction: string;
 };
 
 type BriefLike = {
@@ -214,6 +222,26 @@ function ideaNameFromInput(idea: string, brief: BriefLike | null): string {
   return `${firstSentence.slice(0, 55).trimEnd()}...`;
 }
 
+function priceFromSignals(mode: Mode, signals: DecisionSignal[]): string {
+  if (mode === "personal") return "$0";
+  const monetization = signals.find((s) => s.name === "Monetization")?.score ?? 0;
+  if (monetization >= 75) return "$79";
+  if (monetization >= 60) return "$49";
+  return "$29";
+}
+
+function modelFromSignals(mode: Mode, signals: DecisionSignal[]): string {
+  if (mode === "personal") return "internal";
+  const speed = signals.find((s) => s.name === "Speed")?.score ?? 0;
+  return speed >= 65 ? "one-time" : "monthly";
+}
+
+function nextActionFor(recommendation: Recommendation): string {
+  if (recommendation === "Build Now") return "Ship a focused v1 and open early access today.";
+  if (recommendation === "Refine") return "Narrow the target user and sharpen the value promise, then re-run analysis.";
+  return "Drop this version and test a tighter niche angle before building.";
+}
+
 export async function POST(req: NextRequest) {
   let payload: { idea?: unknown; mode?: unknown };
 
@@ -238,6 +266,8 @@ export async function POST(req: NextRequest) {
   const signals = hasMappedFields ? mapBriefSignals(brief as BriefLike) : deriveIdeaSignals(idea, mode);
 
   const recommendation = recommendationFromSignals(signals);
+  const offerPrice = priceFromSignals(mode, signals);
+  const offerModel = modelFromSignals(mode, signals);
   const response: AnalysisResponse = {
     ideaName: ideaNameFromInput(idea, brief),
     mode,
@@ -248,6 +278,17 @@ export async function POST(req: NextRequest) {
     timeToLaunch: timeToLaunchFromSignals(signals),
     signals,
     source: hasMappedFields ? "brief_fields" : "idea_text",
+    offer: {
+      title: `${ideaNameFromInput(idea, brief)} ${mode === "venture" ? "Launch Offer" : "Workflow Plan"}`,
+      price: offerPrice,
+      model: offerModel,
+      promise:
+        recommendation === "Build Now"
+          ? "Get to live launch quickly with clear founder steps."
+          : "Reduce uncertainty before committing full build effort.",
+      cta: mode === "venture" ? "Get early access" : "Use this workflow",
+    },
+    nextAction: nextActionFor(recommendation),
   };
 
   return NextResponse.json(response, { status: 200 });

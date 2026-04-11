@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
@@ -74,8 +76,27 @@ export async function POST(req: NextRequest) {
       amount_total: session.amount_total,
       subscription: session.subscription,
     });
-    // TODO: provision access, send welcome email, update DB
+    await persistPaymentEvent(session);
   }
 
   return NextResponse.json({ received: true });
+}
+const DATA_DIR = process.env.LEADS_DIR || (process.env.VERCEL ? "/tmp" : path.join(process.cwd(), "data"));
+const PAYMENTS_FILE = path.join(DATA_DIR, "payments.jsonl");
+
+async function persistPaymentEvent(event: {
+  customer_email?: unknown;
+  amount_total?: unknown;
+  currency?: unknown;
+  subscription?: unknown;
+}) {
+  await mkdir(DATA_DIR, { recursive: true });
+  const record = JSON.stringify({
+    customer_email: typeof event.customer_email === "string" ? event.customer_email : "",
+    amount_total: typeof event.amount_total === "number" ? event.amount_total : 0,
+    currency: typeof event.currency === "string" ? event.currency : "usd",
+    subscription: typeof event.subscription === "string" ? event.subscription : "",
+    paid_at: new Date().toISOString(),
+  });
+  await appendFile(PAYMENTS_FILE, `${record}\n`, "utf-8");
 }

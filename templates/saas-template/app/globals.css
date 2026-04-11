@@ -180,6 +180,19 @@ a {
   font-size: 1.1rem;
 }
 
+.section-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.setup-summary {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
 .decision-card .idea-name {
   margin: 4px 0 0;
   font-size: 1.16rem;
@@ -218,6 +231,12 @@ a {
   margin: 10px 0 0;
   color: var(--ink-soft);
   line-height: 1.55;
+}
+
+.next-action {
+  margin: 12px 0 0;
+  font-size: 0.95rem;
+  color: #233246;
 }
 
 .meta-row {
@@ -261,6 +280,36 @@ a {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #6f92bf, #2f5d98);
+}
+
+.offer-card {
+  margin-top: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(45, 106, 79, 0.24);
+  background: #f4fbf6;
+  padding: 14px;
+}
+
+.offer-card h4 {
+  margin: 6px 0;
+  font-size: 1rem;
+}
+
+.offer-card p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.offer-price {
+  margin-top: 10px !important;
+  font-size: 1.2rem;
+  font-weight: 650;
+}
+
+.offer-price span {
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  margin-left: 4px;
 }
 
 .action-row {
@@ -354,6 +403,10 @@ a {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.outputs-grid.simple {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .output-card {
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -365,6 +418,16 @@ a {
   margin: 8px 0 0;
   color: var(--ink-soft);
   line-height: 1.45;
+}
+
+.metrics-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metrics-grid strong {
+  font-size: 1.1rem;
 }
 
 .projects-table {
@@ -433,6 +496,11 @@ a {
   border: 1px solid rgba(160, 123, 32, 0.25);
 }
 
+.state-note.ok {
+  background: #f2fbf5;
+  border: 1px solid rgba(45, 106, 79, 0.25);
+}
+
 .muted {
   color: var(--ink-soft);
 }
@@ -440,6 +508,10 @@ a {
 @media (max-width: 900px) {
   .outputs-grid {
     grid-template-columns: 1fr;
+  }
+
+  .metrics-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .row,
